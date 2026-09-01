@@ -108,12 +108,16 @@ public final class DisplayCoordinator {
                     self.policy.updateConditions(conditions, for: displayID)
                 }
                 surfaces[displayID] = surface
-                surface.show()
-                onSurfaceAdded?(surface)
 
+                // Seed conditions BEFORE notifying the owner. The callback typically calls
+                // `setHasContent`, and pushing a fresh `DisplayConditions` afterwards would
+                // clobber it back to `.noContent`.
                 var conditions = DisplayConditions()
                 conditions.isOccluded = surface.isOccluded
                 policy.updateConditions(conditions, for: displayID)
+
+                surface.show()
+                onSurfaceAdded?(surface)
             }
         }
     }
