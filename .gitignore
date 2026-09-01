@@ -1,0 +1,19 @@
+# Build
+.build/
+.swiftpm/
+DerivedData/
+*.xcodeproj
+*.xcworkspace
+!project.yml
+build/
+dist/
+*.app
+*.dmg
+
+# Test corpus — Steam Workshop content, NOT redistributable. See PLAN.md §11.2
+Tests/Corpus/**
+!Tests/Corpus/.gitkeep
+
+# macOS
+.DS_Store
+*.swp
