@@ -72,6 +72,12 @@ public final class PowerPolicy {
 
     public var allDisplays: [CGDirectDisplayID] { Array(conditions.keys) }
 
+    /// The last conditions recorded for a display, so callers can do a read-modify-write of a
+    /// single field without clobbering the others they do not own.
+    public func existingConditions(for display: CGDirectDisplayID) -> DisplayConditions? {
+        conditions[display]
+    }
+
     private func reevaluateAll() {
         for display in conditions.keys { reevaluate(display) }
     }
