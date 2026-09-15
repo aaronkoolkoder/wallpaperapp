@@ -13,7 +13,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var playback: PlaybackController?
 
     private var statusItem: NSStatusItem?
+    private var popover: NSPopover?
+    private var popoverMonitor: Any?
     private var libraryWindow: NSWindow?
+    private var settingsWindow: NSWindow?
+    private var model: WallpaperSystemModel?
     private let log = Logger(subsystem: "app.diorama", category: "app")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -26,6 +30,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let controller = PlaybackController(coordinator: coordinator)
         playback = controller
 
+        let model = WallpaperSystemModel(
+            coordinator: coordinator, playback: controller, library: library
+        )
+        self.model = model
+
         setUpStatusItem()
 
         // Relay power decisions to whatever backend is playing. The backends never see the
@@ -34,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             self.coordinator.surfaces[displayID]?.apply(directive)
             controller.applyDirective(directive, to: displayID)
+            self.model?.refresh()
         }
 
         if ProcessInfo.processInfo.environment["DIORAMA_FORCE_RENDER"] == "1" {
@@ -83,6 +93,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Playing
 
     private func play(_ item: WallpaperItem) {
+        defer { model?.refresh() }
         guard let playback else { return }
         // Every display gets the same wallpaper for now. Per-display assignment is a Pro feature
         // in Stage 2 (PLAN.md §10.2) and needs UI that does not exist yet.
@@ -92,7 +103,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log.info("\(item.title, privacy: .public): \(report.summary, privacy: .public)")
             }
         }
-        refreshMenu()
     }
 
     // MARK: - Windows
@@ -140,96 +150,82 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             systemSymbolName: "sparkles.rectangle.stack",
             accessibilityDescription: "Diorama"
         )
-        item.menu = buildMenu()
+        item.button?.action = #selector(togglePopover)
+        item.button?.target = self
         statusItem = item
     }
 
-    private enum MenuTag: Int {
-        case status = 1
-        case pause = 2
-        case nowPlaying = 3
-    }
+    @objc private func togglePopover() {
+        if let popover, popover.isShown {
+            closePopover()
+            return
+        }
+        guard let button = statusItem?.button, let model else { return }
 
-    private func buildMenu() -> NSMenu {
-        let menu = NSMenu()
-        menu.delegate = self
+        model.refresh()
 
-        let nowPlaying = NSMenuItem(title: "No wallpaper set", action: nil, keyEquivalent: "")
-        nowPlaying.isEnabled = false
-        nowPlaying.tag = MenuTag.nowPlaying.rawValue
-        menu.addItem(nowPlaying)
-
-        let status = NSMenuItem(title: "Starting…", action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        status.tag = MenuTag.status.rawValue
-        menu.addItem(status)
-
-        menu.addItem(.separator())
-
-        let libraryItem = NSMenuItem(
-            title: "Wallpaper Library…", action: #selector(showLibrary(_:)), keyEquivalent: "l"
+        let content = MenuBarView(
+            model: model,
+            onOpenLibrary: { [weak self] in
+                self?.closePopover()
+                self?.showLibrary(nil)
+            },
+            onOpenSettings: { [weak self] in
+                self?.closePopover()
+                self?.showSettings(nil)
+            },
+            onQuit: { NSApp.terminate(nil) }
         )
-        libraryItem.target = self
-        menu.addItem(libraryItem)
 
-        let pause = NSMenuItem(title: "Pause", action: #selector(togglePause), keyEquivalent: "p")
-        pause.target = self
-        pause.tag = MenuTag.pause.rawValue
-        menu.addItem(pause)
+        let popover = NSPopover()
+        popover.contentSize = NSSize(width: 340, height: 420)
+        popover.behavior = .transient
+        popover.animates = true
+        popover.contentViewController = NSHostingController(rootView: content)
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        self.popover = popover
 
-        menu.addItem(.separator())
-        let quit = NSMenuItem(title: "Quit Diorama", action: #selector(quit), keyEquivalent: "q")
-        quit.target = self
-        menu.addItem(quit)
-        return menu
-    }
-
-    @objc private func togglePause() {
-        coordinator.policy.isUserPaused.toggle()
-    }
-
-    @objc private func quit() {
-        NSApp.terminate(nil)
-    }
-
-    private func refreshMenu() {
-        guard let menu = statusItem?.menu else { return }
-        menuWillOpen(menu)
-    }
-}
-
-extension AppDelegate: NSMenuDelegate {
-    /// Refreshed only while the menu is open. Updating on a timer would mean doing work every
-    /// second in order to describe how little work we are doing.
-    func menuWillOpen(_ menu: NSMenu) {
-        if let item = menu.item(withTag: MenuTag.nowPlaying.rawValue) {
-            let displays = coordinator.surfaces.keys.sorted()
-            if let first = displays.first, let current = playback?.currentItem(for: first) {
-                item.title = current.title
-            } else {
-                item.title = "No wallpaper set"
-            }
-        }
-        if let item = menu.item(withTag: MenuTag.status.rawValue) {
-            item.title = statusSummary()
-        }
-        if let item = menu.item(withTag: MenuTag.pause.rawValue) {
-            item.title = coordinator.policy.isUserPaused ? "Resume" : "Pause"
+        // `.transient` dismisses on most outside interaction, but not reliably when the click
+        // lands on another app's window. This closes it in that case too, so the popover never
+        // lingers over an app the user has moved on to.
+        popoverMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.closePopover() }
         }
     }
 
-    private func statusSummary() -> String {
-        let surfaces = coordinator.surfaces
-        guard !surfaces.isEmpty else { return "No displays" }
-
-        let running = surfaces.values.filter { !$0.directive.isSuspended }
-        guard !running.isEmpty else {
-            if case .suspended(let reason) = surfaces.values.first?.directive {
-                return "Idle — \(reason.description)"
-            }
-            return "Idle"
+    private func closePopover() {
+        popover?.performClose(nil)
+        popover = nil
+        if let popoverMonitor {
+            NSEvent.removeMonitor(popoverMonitor)
+            self.popoverMonitor = nil
         }
-        let fps = running.map(\.directive.frameRate).max() ?? 0
-        return "\(running.count) of \(surfaces.count) display\(surfaces.count == 1 ? "" : "s") · \(fps)fps"
+    }
+
+    @objc private func showSettings(_ sender: Any?) {
+        if let existing = settingsWindow {
+            existing.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            return
+        }
+        guard let model else { return }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
+            styleMask: [.titled, .closable, .miniaturizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "Diorama Settings"
+        window.contentView = NSHostingView(rootView: SettingsView(model: model))
+        window.isReleasedWhenClosed = false
+        window.center()
+        window.setFrameAutosaveName("SettingsWindow")
+
+        settingsWindow = window
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
     }
 }
