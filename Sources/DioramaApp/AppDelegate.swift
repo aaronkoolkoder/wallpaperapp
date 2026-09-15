@@ -114,7 +114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let root = LibraryView(store: library) { [weak self] item in self?.play(item) }
+        let root = LibraryView(store: library, systemModel: model) { [weak self] item in
+            self?.play(item)
+        }
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 660),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
@@ -124,6 +126,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.title = "Diorama"
         window.contentView = NSHostingView(rootView: root)
         window.titlebarAppearsTransparent = true
+        window.toolbarStyle = .unified
         window.isReleasedWhenClosed = false
         window.center()
         window.setFrameAutosaveName("LibraryWindow")

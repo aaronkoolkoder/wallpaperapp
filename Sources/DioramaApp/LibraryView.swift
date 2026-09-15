@@ -3,8 +3,10 @@ import LibraryKit
 import SwiftUI
 import WEFormat
 
-/// Sidebar filters. Kept as a flat list rather than a hierarchy: a wallpaper library is browsed
-/// by "show me the videos" far more often than by anything that would justify nesting.
+/// Sidebar filters.
+///
+/// Flat rather than hierarchical: a wallpaper library is browsed by "show me the scenes" far
+/// more often than by anything that would justify nesting.
 enum LibraryFilter: Hashable, Identifiable, CaseIterable {
     case all, scenes, videos, web, unsupported
 
@@ -22,11 +24,21 @@ enum LibraryFilter: Hashable, Identifiable, CaseIterable {
 
     var symbol: String {
         switch self {
-        case .all: "square.grid.2x2"
-        case .scenes: "cube.transparent"
-        case .videos: "film"
+        case .all: "square.grid.2x2.fill"
+        case .scenes: "cube.transparent.fill"
+        case .videos: "film.fill"
         case .web: "globe"
-        case .unsupported: "exclamationmark.triangle"
+        case .unsupported: "exclamationmark.triangle.fill"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .all: .accentColor
+        case .scenes: .purple
+        case .videos: .blue
+        case .web: .teal
+        case .unsupported: .orange
         }
     }
 
@@ -41,13 +53,20 @@ enum LibraryFilter: Hashable, Identifiable, CaseIterable {
     }
 }
 
+/// The main window: browse the library, inspect a wallpaper, set it.
+///
+/// Layout follows what a wallpaper library actually needs and what Wallpaper Engine itself
+/// established — a filter rail, a dense gallery, and a properties panel for the selection —
+/// rendered in Tahoe's language rather than as a port of its chrome.
 struct LibraryView: View {
     @Bindable var store: LibraryStore
+    var systemModel: WallpaperSystemModel?
     let onPlay: (WallpaperItem) -> Void
 
     @State private var filter: LibraryFilter = .all
     @State private var search = ""
     @State private var selection: WallpaperItem.ID?
+    @State private var showsInspector = true
 
     private var visibleItems: [WallpaperItem] {
         let base = store.items.filter { filter.matches($0) }
@@ -58,6 +77,14 @@ struct LibraryView: View {
         }
     }
 
+    private var selectedItem: WallpaperItem? {
+        selection.flatMap { id in store.items.first { $0.id == id } }
+    }
+
+    private var playingIDs: Set<String> {
+        Set((systemModel?.displays ?? []).compactMap(\.wallpaperID))
+    }
+
     var body: some View {
         NavigationSplitView {
             sidebar
@@ -65,8 +92,25 @@ struct LibraryView: View {
             detail
         }
         .navigationTitle("Diorama")
-        .frame(minWidth: 820, minHeight: 560)
+        .navigationSubtitle(subtitle)
+        .inspector(isPresented: $showsInspector) {
+            InspectorPanel(
+                item: selectedItem,
+                isPlaying: selectedItem.map { playingIDs.contains($0.id) } ?? false,
+                onPlay: { if let item = selectedItem { onPlay(item) } }
+            )
+            .inspectorColumnWidth(min: 260, ideal: 300, max: 380)
+        }
+        .toolbar { toolbarContent }
+        .frame(minWidth: 940, minHeight: 620)
         .task { if store.rootURL == nil { store.restore() } }
+    }
+
+    private var subtitle: String {
+        guard store.rootURL != nil else { return "" }
+        if store.isScanning { return "Indexing…" }
+        let playable = store.items.filter(\.isPlayable).count
+        return "\(playable) playable · \(store.items.count) total"
     }
 
     // MARK: - Sidebar
@@ -75,28 +119,38 @@ struct LibraryView: View {
         List(selection: $filter) {
             Section("Library") {
                 ForEach(LibraryFilter.allCases) { entry in
-                    Label(entry.title, systemImage: entry.symbol)
-                        .badge(store.items.filter { entry.matches($0) }.count)
-                        .tag(entry)
+                    Label {
+                        Text(entry.title)
+                    } icon: {
+                        Image(systemName: entry.symbol)
+                            .foregroundStyle(entry.tint)
+                    }
+                    .badge(store.items.filter { entry.matches($0) }.count)
+                    .tag(entry)
                 }
             }
         }
-        .navigationSplitViewColumnWidth(min: 200, ideal: 220, max: 280)
-        .safeAreaInset(edge: .bottom) { libraryFooter }
+        .navigationSplitViewColumnWidth(min: 212, ideal: 228, max: 300)
+        .safeAreaInset(edge: .bottom) { sidebarFooter }
     }
 
-    private var libraryFooter: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private var sidebarFooter: some View {
+        VStack(alignment: .leading, spacing: Design.Space.tight) {
             Divider()
             if let root = store.rootURL {
-                Text(root.lastPathComponent)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(root.path)
+                HStack(spacing: 6) {
+                    Image(systemName: "folder.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(root.lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .help(root.path)
             }
-            HStack {
+            HStack(spacing: 6) {
                 Button("Choose Folder…", action: chooseFolder)
                     .controlSize(.small)
                 Spacer()
@@ -121,25 +175,66 @@ struct LibraryView: View {
         if store.rootURL == nil {
             EmptyLibraryView(onChoose: chooseFolder, accessError: store.accessError)
         } else if store.isScanning && store.items.isEmpty {
-            ProgressView("Indexing your library…")
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            VStack(spacing: 12) {
+                ProgressView()
+                Text("Indexing your library…").foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if visibleItems.isEmpty {
             ContentUnavailableView.search(text: search)
         } else {
-            WallpaperGrid(items: visibleItems, selection: $selection, onPlay: onPlay)
-                .searchable(text: $search, placement: .toolbar, prompt: "Search wallpapers")
-                .toolbar { scanSummary }
+            grid
         }
     }
 
-    @ToolbarContentBuilder
-    private var scanSummary: some ToolbarContent {
-        ToolbarItem(placement: .status) {
-            if let scan = store.lastScan {
-                Text("\(scan.playableCount) playable · \(store.items.count) total")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    private var grid: some View {
+        ScrollView {
+            LazyVGrid(
+                columns: [
+                    GridItem(
+                        .adaptive(minimum: Design.Grid.minimum, maximum: Design.Grid.maximum),
+                        spacing: Design.Space.grid
+                    )
+                ],
+                spacing: Design.Space.grid
+            ) {
+                ForEach(visibleItems) { item in
+                    WallpaperCard(
+                        item: item,
+                        isSelected: selection == item.id,
+                        isPlaying: playingIDs.contains(item.id),
+                        onPlay: { onPlay(item) }
+                    )
+                    .onTapGesture { selection = item.id }
+                    .onTapGesture(count: 2) { onPlay(item) }
+                }
             }
+            .padding(Design.Space.gutter)
+        }
+        .scrollContentBackground(.hidden)
+        .searchable(text: $search, placement: .toolbar, prompt: "Search wallpapers")
+    }
+
+    // MARK: - Toolbar
+
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                if let item = selectedItem { onPlay(item) }
+            } label: {
+                Label("Set as Wallpaper", systemImage: "play.fill")
+            }
+            .disabled(selectedItem?.isPlayable != true)
+            .help("Set the selected wallpaper")
+        }
+        ToolbarItem(placement: .primaryAction) {
+            Button {
+                showsInspector.toggle()
+            } label: {
+                Label("Inspector", systemImage: "sidebar.trailing")
+            }
+            .help("Show or hide the inspector")
         }
     }
 
@@ -158,20 +253,20 @@ struct LibraryView: View {
     }
 }
 
-/// First-run state. This is the app's biggest friction point — the wallpapers live on a Windows
-/// PC and have to get here somehow — so it explains the move concretely instead of just showing
-/// a folder picker and hoping.
+/// First run. The wallpapers live on a Windows PC and have to get here somehow, which is this
+/// app's single biggest point of friction, so this explains the move concretely rather than
+/// showing a bare folder picker and hoping.
 struct EmptyLibraryView: View {
     let onChoose: () -> Void
     var accessError: String?
 
     var body: some View {
-        VStack(spacing: 20) {
+        VStack(spacing: 22) {
             Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 52))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 54))
+                .foregroundStyle(.tint)
 
-            VStack(spacing: 8) {
+            VStack(spacing: 7) {
                 Text("Bring your wallpapers over")
                     .font(.title2.weight(.semibold))
                 Text("Copy this folder from your PC, then choose it here.")
@@ -181,30 +276,30 @@ struct EmptyLibraryView: View {
             Text(verbatim: #"C:\Program Files (x86)\Steam\steamapps\workshop\content\431960"#)
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .background(.quaternary, in: .rect(cornerRadius: 8))
+                .padding(.horizontal, 16)
+                .padding(.vertical, 11)
+                .panelSurface(radius: Design.Radius.chip)
 
-            Text("AirDrop, a USB drive, or a shared folder all work. "
-                 + "Nothing is uploaded anywhere — the files stay on your Mac.")
+            Text("AirDrop, a USB drive, or a shared folder all work. Nothing is uploaded "
+                 + "anywhere — the files stay on your Mac.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 420)
+                .frame(maxWidth: 430)
 
             if let accessError {
                 Label(accessError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .foregroundStyle(.orange)
                     .multilineTextAlignment(.center)
-                    .frame(maxWidth: 420)
+                    .frame(maxWidth: 430)
             }
 
             Button("Choose Folder…", action: onChoose)
-                .controlSize(.large)
+                .controlSize(.extraLarge)
                 .buttonStyle(.borderedProminent)
         }
-        .padding(40)
+        .padding(44)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

@@ -3,6 +3,7 @@ import Diagnostics
 import ImageIO
 import LibraryKit
 import PlayerCore
+import WEFormat
 import SwiftUI
 import UniformTypeIdentifiers
 import WallpaperKit
@@ -35,6 +36,27 @@ enum GUIPreviewRenderer {
             )
             .frame(width: 340),
             to: directory.appendingPathComponent("menubar.png")
+        )
+
+        let sample = previewItem()
+
+        // Grid cards side by side: one playable and selected, one unsupported.
+        write(
+            HStack(spacing: Design.Space.grid) {
+                WallpaperCard(item: sample, isSelected: true, isPlaying: true, onPlay: {})
+                WallpaperCard(
+                    item: unsupportedItem(), isSelected: false, isPlaying: false, onPlay: {}
+                )
+            }
+            .padding(Design.Space.gutter)
+            .frame(width: 640),
+            to: directory.appendingPathComponent("library-cards.png")
+        )
+
+        write(
+            InspectorPanel(item: sample, isPlaying: true, onPlay: {})
+                .frame(width: 300, height: 700),
+            to: directory.appendingPathComponent("inspector.png")
         )
 
         // Only the About panel is plain composition; the Form-based panels render blank here
@@ -100,6 +122,49 @@ enum GUIPreviewRenderer {
         ])
         return model
     }
+}
+
+/// Representative library entries, including the awkward cases the design has to hold.
+@MainActor
+private func previewItem() -> WallpaperItem {
+    WallpaperItem(
+        id: "2000000002",
+        title: "Snowfall Over Pines",
+        type: .scene,
+        directory: URL(fileURLWithPath: "/tmp"),
+        contentURL: URL(fileURLWithPath: "/tmp/scene.pkg"),
+        previewURL: previewImageURL(),
+        tags: ["Nature", "Relaxing", "Winter", "Animated"],
+        contentRating: "Everyone",
+        properties: [
+            "density": WEProperty(type: .slider, text: "Snow density", value: .number(0.65)),
+            "glow": WEProperty(type: .bool, text: "Glow", value: .bool(true)),
+            "tint": WEProperty(
+                type: .color, text: "Tint", value: .vector3(WEVector3(0.82, 0.9, 1.0))
+            ),
+            "speed": WEProperty(type: .slider, text: "Fall speed", value: .number(1.0)),
+        ],
+        sizeBytes: 48_300_000,
+        modifiedAt: Date(timeIntervalSince1970: 1_767_000_000),
+        unplayableReason: nil
+    )
+}
+
+@MainActor
+private func unsupportedItem() -> WallpaperItem {
+    WallpaperItem(
+        id: "1000000004", title: "Rainmeter Clock", type: .application,
+        directory: URL(fileURLWithPath: "/tmp"), contentURL: nil, previewURL: nil,
+        tags: [], contentRating: nil, properties: [:], sizeBytes: 0, modifiedAt: nil,
+        unplayableReason: "Application wallpapers are Windows programs and cannot run on macOS"
+    )
+}
+
+/// Uses a real scene render when one is present, so the card is judged against actual artwork
+/// rather than a placeholder glyph.
+private func previewImageURL() -> URL? {
+    let candidate = URL(fileURLWithPath: "web/public/hero-snow.png")
+    return FileManager.default.fileExists(atPath: candidate.path) ? candidate : nil
 }
 
 /// Minimal stand-in so previews do not need a live Metal device or real surfaces.
