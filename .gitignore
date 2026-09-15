@@ -17,3 +17,6 @@ Tests/Corpus/**
 # macOS
 .DS_Store
 *.swp
+
+# Agent scratch build dirs
+.build-agent-*/
