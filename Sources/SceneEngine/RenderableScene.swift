@@ -20,8 +20,10 @@ public struct RenderableLayer: @unchecked Sendable {
     public var tint: SIMD4<Float>
     public var blend: BlendMode
     public var texture: (any MTLTexture)?
-    /// Parallax response, unused until camera motion lands in M5.
+    /// Parallax response.
     public var parallaxDepth: SIMD2<Float>
+    /// Post-process chain applied to this layer alone, before it is composited.
+    public var effects: [PostEffect] = []
     public var isVisible: Bool
 
     /// Model matrix with a camera offset folded into the translation.
@@ -60,6 +62,8 @@ public struct RenderableScene: @unchecked Sendable {
     public var cameraMotion: CameraMotion
     /// Live particle emitters, simulated each frame.
     public var particles: [ParticleSystem] = []
+    /// Post-process chain applied to the fully composited frame.
+    public var sceneEffects: [PostEffect] = []
     public var report: CompatibilityReport
 
     /// Largest distance any layer can be displaced by parallax, in scene units.
@@ -116,6 +120,52 @@ public struct SceneBuilder {
         }
     }
 
+    /// Map an effect definition onto a built-in implementation.
+    ///
+    /// Running a Wallpaper Engine effect faithfully means transpiling its GLSL to MSL, which is
+    /// built but not yet wired to a native backend. Matching by name covers the effects that
+    /// actually appear in most wallpapers, and anything unmatched is reported by name so the
+    /// user learns what is missing instead of wondering why a scene looks flat.
+    static func postEffect(for document: EffectDocument) -> PostEffect? {
+        switch document.classifiedKind {
+        case "bloom": .bloom(threshold: 0.6, intensity: 0.8)
+        case "blur": .gaussianBlur(radius: 4)
+        case "vignette": .vignette(intensity: 0.6)
+        case "chromatic": .chromaticAberration(amount: 1.0)
+        case "sharpen": .sharpen(amount: 0.4)
+        case "pixelate": .pixelate(size: 6)
+        default: nil
+        }
+    }
+
+    private func resolveEffects(
+        _ effects: [SceneEffect],
+        assets: SceneAssets,
+        owner: String,
+        report: inout CompatibilityReport
+    ) -> [PostEffect] {
+        var resolved: [PostEffect] = []
+        for effect in effects {
+            if let visible = effect.visible?.staticValue, !visible { continue }
+            guard let path = effect.file else { continue }
+            guard let data = assets.data(for: path) ?? assets.data(for: path + ".json"),
+                  let document = try? JSONDecoder().decode(EffectDocument.self, from: data)
+            else {
+                report.add(.degraded, feature: "Effect", detail: "\(path) could not be read")
+                continue
+            }
+            if let post = Self.postEffect(for: document) {
+                resolved.append(post)
+            } else {
+                report.add(
+                    .degraded, feature: "Effect",
+                    detail: "\(document.name ?? path) is not supported yet"
+                )
+            }
+        }
+        return resolved
+    }
+
     public func build(
         document: SceneDocument,
         assets: SceneAssets,
@@ -137,7 +187,11 @@ public struct SceneBuilder {
         for object in document.objects {
             switch object.kind {
             case .image:
-                if let layer = buildImageLayer(object, assets: assets, device: device, report: &report) {
+                if var layer = buildImageLayer(object, assets: assets, device: device, report: &report) {
+                    layer.effects = resolveEffects(
+                        object.effects, assets: assets,
+                        owner: layer.name, report: &report
+                    )
                     layers.append(layer)
                 }
             case .particle:
@@ -162,12 +216,15 @@ public struct SceneBuilder {
             }
         }
 
-        // Effects, SceneScript and camera motion are M5/M6. Say so once for the whole scene
-        // rather than once per object, which would bury the report in noise.
-        if document.objects.contains(where: { !$0.effects.isEmpty }) {
-            report.add(
-                .degraded, feature: "Effects",
-                detail: "post-processing effect chains are not applied yet"
+        // Scene-wide bloom is declared on `general` rather than as an effect file, and is by
+        // far the most common post-process in Workshop content.
+        var sceneEffects: [PostEffect] = []
+        if document.general?.bloom == true {
+            sceneEffects.append(
+                .bloom(
+                    threshold: Float(document.general?.bloomThreshold ?? 0.6),
+                    intensity: Float(document.general?.bloomStrength ?? 0.8)
+                )
             )
         }
 
@@ -183,6 +240,7 @@ public struct SceneBuilder {
             ),
             cameraMotion: CameraMotion(general: document.general),
             particles: systems,
+            sceneEffects: sceneEffects,
             report: report
         )
     }

@@ -9,8 +9,9 @@ no account, no server, no network.
 ## Status
 
 Early. Video, web, image **and Scene** wallpapers play — scenes render natively in Metal from
-their `.pkg`. Camera parallax and particle systems work. Text layers and post-processing effect chains are
-not drawn yet; wallpapers using them render what we can and report the rest by name. See [PLAN.md](PLAN.md) for the full build plan,
+their `.pkg`. Camera parallax, particle systems and post-processing chains (bloom, blur, vignette, chromatic
+aberration, sharpen, pixelate) all work. Text layers and SceneScript are not implemented;
+wallpapers using them render what we can and report the rest by name. See [PLAN.md](PLAN.md) for the full build plan,
 binary format specs, milestones, and licensing constraints.
 
 | Milestone | State |
@@ -21,7 +22,8 @@ binary format specs, milestones, and licensing constraints.
 | M3 — `.pkg` / `.tex` format layer | ✅ Done |
 | M4 — static scene rendering | ✅ Done |
 | M5 — parallax + particles | ✅ Done |
-| M5b — effect chains, text | ⬜ Next |
+| M5b — effect chains (bloom, blur, vignette…) | ✅ Done |
+| M6 — SceneScript, text layers | ⬜ Next |
 | M6 — SceneScript | ⬜ |
 | M7 — properties, audio, playlists | ⬜ |
 | M8 — signing, notarization, release | ⬜ |
@@ -36,6 +38,7 @@ M5 Pro, 3024×1964 Retina, on battery. Percent of **one** core.
 | Static image / scene preview | **0%** |
 | Scene, 3 layers | **0.3%** |
 | Scene, 900 particles | **0.1%** |
+| Scene, particles + bloom chain | **0.1–0.2%** |
 | Video, 1080p H.264 | **3.2%** |
 | Idle, no wallpaper | **0%** (45MB RSS) |
 

@@ -16,6 +16,7 @@ import os
 public final class SceneRenderer {
     private let renderDevice: RenderDevice
     private let quads: QuadRenderer
+    private let post: PostProcessor
     private let pool: FBOPool
     private let log = Logger(subsystem: "app.diorama", category: "scene-render")
 
@@ -38,6 +39,7 @@ public final class SceneRenderer {
     public init(renderDevice: RenderDevice) throws {
         self.renderDevice = renderDevice
         self.quads = try QuadRenderer(device: renderDevice.device)
+        self.post = try PostProcessor(device: renderDevice.device)
         self.pool = FBOPool(device: renderDevice.device)
     }
 
@@ -87,9 +89,9 @@ public final class SceneRenderer {
             alpha: 1
         )
 
-        guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene"),
-              let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor)
-        else { return }
+        // The encoder is created inside whichever path runs. Creating one here and leaving it
+        // unended on the effects path is a Metal API violation, not merely wasteful.
+        guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else { return }
 
         // Aspect-fill the scene's ortho box into the drawable. Letterboxing a wallpaper would
         // show bars at the edges of the desktop, which is never what anyone wants.
@@ -98,9 +100,45 @@ public final class SceneRenderer {
             drawableSize: SIMD2(Float(drawable.texture.width), Float(drawable.texture.height))
         )
 
-        drawScratch.removeAll(keepingCapacity: true)
+        let hasEffects = !scene.sceneEffects.isEmpty
+            || scene.layers.contains { !$0.effects.isEmpty }
+
+        if !hasEffects {
+            // Fast path. Most scenes have no post-processing, and routing them through an
+            // intermediate target would cost a full-frame copy for nothing.
+            guard let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+                return
+            }
+            buildDraws(scene: scene, cameraOffset: cameraOffset, into: &drawScratch)
+            quads.encode(
+                drawScratch, into: encoder, projection: projection, pixelFormat: layer.pixelFormat
+            )
+            encoder.endEncoding()
+        } else {
+            renderWithEffects(
+                scene: scene,
+                cameraOffset: cameraOffset,
+                projection: projection,
+                drawable: drawable,
+                clear: descriptor.colorAttachments[0].clearColor,
+                buffer: buffer
+            )
+        }
+
+        buffer.present(drawable)
+        buffer.commit()
+
+        pool.endFrame()
+        framesRendered &+= 1
+    }
+
+    /// Fill `draws` with every visible layer and particle, in composition order.
+    private func buildDraws(
+        scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [QuadDraw]
+    ) {
+        draws.removeAll(keepingCapacity: true)
         for sceneLayer in scene.layers where sceneLayer.isVisible {
-            drawScratch.append(
+            draws.append(
                 QuadDraw(
                     transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
                     tint: sceneLayer.tint,
@@ -109,20 +147,146 @@ public final class SceneRenderer {
                 )
             )
         }
-
-        // Particles draw after the layers, which is where scene authors expect them.
         for system in scene.particles {
             system.update(deltaTime: clock.delta)
-            system.appendDraws(to: &drawScratch, cameraOffset: cameraOffset)
+            system.appendDraws(to: &draws, cameraOffset: cameraOffset)
+        }
+    }
+
+    /// Composition path for scenes that post-process.
+    ///
+    /// Layers carrying their own effect chain are rendered alone into a pooled target, run
+    /// through the chain, and composited back in z-order. Everything else draws straight onto the
+    /// accumulation target. Preserving order this way is the whole reason for going layer by
+    /// layer rather than collecting effected layers and doing them at the end.
+    private func renderWithEffects(
+        scene: RenderableScene,
+        cameraOffset: SIMD2<Float>,
+        projection: simd_float4x4,
+        drawable: any CAMetalDrawable,
+        clear: MTLClearColor,
+        buffer: any MTLCommandBuffer
+    ) {
+        let width = drawable.texture.width
+        let height = drawable.texture.height
+
+        guard let accumulator = pool.acquire(
+            width: width, height: height, pixelFormat: drawable.texture.pixelFormat
+        ) else { return }
+        defer { pool.release(accumulator) }
+
+        var isFirstWrite = true
+
+        func drawBatch(_ draws: [QuadDraw], into target: any MTLTexture, clearFirst: Bool) {
+            guard !draws.isEmpty || clearFirst else { return }
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = target
+            pass.colorAttachments[0].loadAction = clearFirst ? .clear : .load
+            pass.colorAttachments[0].storeAction = .store
+            pass.colorAttachments[0].clearColor = clearFirst
+                ? clear
+                : MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
+            guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return }
+            quads.encode(
+                draws, into: encoder, projection: projection, pixelFormat: target.pixelFormat
+            )
+            encoder.endEncoding()
         }
 
-        quads.encode(drawScratch, into: encoder, projection: projection, pixelFormat: layer.pixelFormat)
-        encoder.endEncoding()
-        buffer.present(drawable)
-        buffer.commit()
+        var batch: [QuadDraw] = []
 
-        pool.endFrame()
-        framesRendered &+= 1
+        for sceneLayer in scene.layers where sceneLayer.isVisible {
+            let draw = QuadDraw(
+                transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
+                tint: sceneLayer.tint,
+                texture: sceneLayer.texture,
+                blend: sceneLayer.blend
+            )
+
+            guard !sceneLayer.effects.isEmpty else {
+                batch.append(draw)
+                continue
+            }
+
+            // Flush everything queued behind this layer so ordering survives.
+            drawBatch(batch, into: accumulator.texture, clearFirst: isFirstWrite)
+            if !batch.isEmpty || isFirstWrite { isFirstWrite = false }
+            batch.removeAll(keepingCapacity: true)
+
+            guard let isolated = pool.acquire(
+                width: width, height: height, pixelFormat: drawable.texture.pixelFormat
+            ), let processed = pool.acquire(
+                width: width, height: height, pixelFormat: drawable.texture.pixelFormat
+            ) else {
+                // No memory for the chain: draw the layer unprocessed rather than dropping it.
+                batch.append(draw)
+                continue
+            }
+
+            let isolatedPass = MTLRenderPassDescriptor()
+            isolatedPass.colorAttachments[0].texture = isolated.texture
+            isolatedPass.colorAttachments[0].loadAction = .clear
+            isolatedPass.colorAttachments[0].storeAction = .store
+            isolatedPass.colorAttachments[0].clearColor = MTLClearColor(
+                red: 0, green: 0, blue: 0, alpha: 0
+            )
+            if let encoder = buffer.makeRenderCommandEncoder(descriptor: isolatedPass) {
+                quads.encode(
+                    [draw], into: encoder, projection: projection,
+                    pixelFormat: isolated.texture.pixelFormat
+                )
+                encoder.endEncoding()
+            }
+
+            post.apply(
+                sceneLayer.effects,
+                source: isolated.texture,
+                destination: processed.texture,
+                commandBuffer: buffer,
+                pool: pool
+            )
+
+            // Composite the processed layer back, full-frame.
+            let composite = QuadDraw(
+                transform: Self.fullscreenTransform(projection: projection),
+                texture: processed.texture,
+                blend: .premultipliedAlpha
+            )
+            drawBatch([composite], into: accumulator.texture, clearFirst: false)
+
+            pool.release(isolated)
+            pool.release(processed)
+        }
+
+        drawBatch(batch, into: accumulator.texture, clearFirst: isFirstWrite)
+        if isFirstWrite { isFirstWrite = false }
+
+        // Particles last, straight onto the accumulator.
+        var particleDraws: [QuadDraw] = []
+        for system in scene.particles {
+            system.update(deltaTime: clock.delta)
+            system.appendDraws(to: &particleDraws, cameraOffset: cameraOffset)
+        }
+        drawBatch(particleDraws, into: accumulator.texture, clearFirst: false)
+
+        // Scene-wide chain straight into the drawable.
+        post.apply(
+            scene.sceneEffects,
+            source: accumulator.texture,
+            destination: drawable.texture,
+            commandBuffer: buffer,
+            pool: pool
+        )
+    }
+
+    /// A quad that exactly covers the frame under the scene's projection.
+    ///
+    /// The composite step needs to blit a processed layer back in the same coordinate space the
+    /// rest of the scene draws in, so it has to be expressed as a quad rather than a blit.
+    static func fullscreenTransform(projection: simd_float4x4) -> simd_float4x4 {
+        let halfWidth = 1 / max(0.000001, projection.columns.0.x)
+        let halfHeight = 1 / max(0.000001, projection.columns.1.y)
+        return simd_float4x4(diagonal: SIMD4(halfWidth * 2, halfHeight * 2, 1, 1))
     }
 
     /// Scale the scene so it covers the drawable, cropping the longer axis rather than letting
@@ -174,6 +338,11 @@ extension SceneRenderer {
     /// - Parameter warmUpSeconds: simulate this long before capturing. Particle emitters start
     ///   empty, so a cold single frame of a snow scene renders nothing at all and would make a
     ///   working emitter look broken.
+    /// - Parameters:
+    ///   - pointer: normalised pointer position, so parallax can be exercised without a live
+    ///     cursor. Settles the camera immediately, since a single frame has no history to ease from.
+    ///   - warmUpSeconds: simulate this long before capturing. Particle emitters start empty, so
+    ///     a cold frame of a snow scene renders nothing and makes a working emitter look broken.
     public func renderOffscreen(
         width: Int, height: Int, pointer: SIMD2<Float> = .zero, warmUpSeconds: Float = 0
     ) -> CGImage? {
@@ -206,8 +375,22 @@ extension SceneRenderer {
             return nil
         }
 
+        // Effects need somewhere to read from, so composition goes to an intermediate whenever
+        // the scene post-processes. Rendering straight to `target` would silently skip the
+        // chain — which is exactly the bug this path had: the headless harness was exercising a
+        // different pipeline from the app, so bloom rendered live but not in tests.
+        let hasEffects = !scene.sceneEffects.isEmpty
+            || scene.layers.contains { !$0.effects.isEmpty }
+
+        var intermediate: PooledTexture?
+        if hasEffects {
+            intermediate = pool.acquire(width: width, height: height, pixelFormat: .bgra8Unorm)
+        }
+        defer { if let intermediate { pool.release(intermediate) } }
+        let compositionTarget: any MTLTexture = intermediate?.texture ?? target
+
         let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = target
+        pass.colorAttachments[0].texture = compositionTarget
         pass.colorAttachments[0].loadAction = .clear
         pass.colorAttachments[0].storeAction = .store
         pass.colorAttachments[0].clearColor = MTLClearColor(
@@ -224,6 +407,7 @@ extension SceneRenderer {
         let projection = aspectFilledProjectionForTesting(
             scene: scene, drawableSize: SIMD2(Float(width), Float(height))
         )
+
         var draws = scene.layers.filter(\.isVisible).map { layer in
             QuadDraw(
                 transform: layer.modelMatrix(cameraOffset: cameraOffset),
@@ -238,8 +422,24 @@ extension SceneRenderer {
 
         quads.encode(draws, into: encoder, projection: projection, pixelFormat: .bgra8Unorm)
         encoder.endEncoding()
+
+        if hasEffects, intermediate != nil {
+            // Per-layer chains are folded into the scene chain here. This path is a diagnostic,
+            // and reproducing exact per-layer isolation would mean duplicating the whole live
+            // composition path for no extra diagnostic value.
+            let combined = scene.layers.flatMap(\.effects) + scene.sceneEffects
+            post.apply(
+                combined,
+                source: compositionTarget,
+                destination: target,
+                commandBuffer: buffer,
+                pool: pool
+            )
+        }
+
         buffer.commit()
         buffer.waitUntilCompleted()
+        pool.endFrame()
 
         return Self.makeImage(from: target)
     }

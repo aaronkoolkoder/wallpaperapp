@@ -173,6 +173,11 @@ case "scene":
         )
 
         print("layers:     \(scene.layers.count)")
+        if !scene.sceneEffects.isEmpty {
+            print("scene effects: \(scene.sceneEffects.map(\.debugName).joined(separator: ", "))")
+        } else {
+            print("scene effects: none")
+        }
         if !scene.particles.isEmpty {
             let total = scene.particles.reduce(0) { $0 + $1.maxCount }
             print("particles:  \(scene.particles.count) emitter(s), up to \(total)")
