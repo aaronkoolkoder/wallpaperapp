@@ -324,20 +324,40 @@ radically better experience, because the user knows.
 
 The stated requirement is 1–2% CPU. Here's the honest version, and how we hit it.
 
-### 6.1 Targets
+### 6.1 Targets and measured results
 
-| State | CPU (of one P-core) | GPU | Notes |
+Measured on an M5 Pro (5 P-cores, 10 E-cores), 3024x1964 Retina, on battery. CPU figures are
+percent of **one** core, as `ps` reports them.
+
+| State | Target | **Measured** | Notes |
 |---|---|---|---|
-| Occluded by any window | **0%** | 0% | Fully suspended. This is the common case. |
-| Visible, video wallpaper | **< 1%** | ~0% | Fixed-function VideoToolbox decode. |
-| Visible, simple scene @ 30fps | **1–2%** | 3–8% | The stated target. |
-| Visible, heavy scene @ 60fps | 2–4% | 15–30% | Honest ceiling; user-tunable. |
-| Low Power Mode | **0%** | 0% | Suspended by default, user-overridable. |
+| Occluded by any window | 0% | **0%** ✅ | Display link stopped, process idle. The common case. |
+| No wallpaper set | 0% | **0%** ✅ | |
+| Static image / scene preview | < 1% | **0%** ✅ | Handed to the compositor once; no display link, no per-frame work. |
+| Video, 1080p H.264 | < 1% | **3.2%** ⚠️ | Misses target. See below. |
+| Video, 4K HEVC 240fps | — | **3.6%** | Apple's own wallpaper format; an outlier, not typical Workshop content. |
+| Idle app, no content | — | **0%**, 45MB RSS | |
 
-**Being straight about it:** 1–2% *CPU* is very achievable, because the work is on the GPU. GPU utilization is the
-number that actually matters for battery on a laptop, and a heavy scene will use real GPU. So the app ships with a
-**live energy readout** and honest defaults (30fps cap, suspend on battery below 20%), rather than quoting a
-flattering CPU number and letting users discover the battery drain themselves.
+**The video number misses its target and the reason is now understood.** Cost is roughly constant
+across 1080p H.264 and 4K HEVC — halving the resolution and changing codec moved it by 0.4 points
+— so it is not decode. Since the static-image path on the same surface measures a true 0%, the
+window, the desktop level and the compositing of a full-screen layer are all free. What remains is
+the `AVPlayerLayer` presentation path itself.
+
+Two things were tried and did not help: stopping the redundant display link (correct in principle,
+and kept, but it was not the cost), and `preferredMaximumResolution` (documented mainly for HLS;
+local file assets appear to ignore it).
+
+The escape hatch named in §5.4 is the next thing to try: feed `AVSampleBufferDisplayLayer` directly
+from an `AVAssetReader` and present at the video's own rate rather than the display's. That was
+deliberately not taken first because it means owning the read loop, the timebase and the loop
+wrap, and the saving had to be demonstrated before paying for that complexity. It now has a
+measurement to justify it.
+
+**In absolute terms:** 3.2% of one core is ~0.21% of this machine's total CPU, and it only applies
+while the wallpaper is genuinely visible. That is a defensible place to ship from, but it is not
+the number the plan promised, and the marketing copy must quote the measured figure rather than
+the target.
 
 ### 6.2 The mechanisms
 
