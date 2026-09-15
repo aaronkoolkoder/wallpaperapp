@@ -144,10 +144,8 @@ public final class PlaybackController {
 
     /// Decide what to actually play.
     ///
-    /// Scene wallpapers have no renderer yet (that is M4 through M6), so they degrade to their
-    /// own preview image rather than showing black. A still frame of the wallpaper you asked for
-    /// is a much better failure than nothing, it keeps the library usable while the scene engine
-    /// is built, and the compatibility report says plainly that this is what happened.
+    /// Scenes render natively as of M4. A scene that fails to load still reports why through the
+    /// compatibility report rather than silently showing black.
     static func resolvePlayback(for item: WallpaperItem, contentURL: URL) -> ResolvedPlayback {
         let kind: WallpaperKind = switch item.type {
         case .video: .video
@@ -157,21 +155,6 @@ public final class PlaybackController {
         case .unknown: Self.kindFromExtension(contentURL)
         }
 
-        if kind == .scene {
-            guard let preview = item.previewURL else {
-                return ResolvedPlayback(kind: .scene, url: contentURL)
-            }
-            return ResolvedPlayback(
-                kind: .image,
-                url: preview,
-                findings: [CompatibilityFinding(
-                    level: .degraded,
-                    feature: "Scene rendering",
-                    detail: "showing this wallpaper's preview image for now; "
-                        + "animated scenes are not supported yet"
-                )]
-            )
-        }
         return ResolvedPlayback(kind: kind, url: contentURL)
     }
 
@@ -190,8 +173,9 @@ public final class PlaybackController {
         case .video: VideoBackend()
         case .web: WebBackend()
         case .image: ImageBackend()
-        // Not yet implemented — M4 through M6.
-        case .scene, .application: nil
+        case .scene: SceneBackend()
+        // Windows executables; permanently out of scope.
+        case .application: nil
         }
     }
 }

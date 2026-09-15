@@ -1,5 +1,11 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import LibraryKit
+import MetalRenderer
+import Metal
+import SceneEngine
+import UniformTypeIdentifiers
 import WEFormat
 
 // A developer CLI for inspecting Wallpaper Engine content without launching the app.
@@ -21,6 +27,9 @@ func usage() -> Never {
       wetool pkg extract <scene.pkg> <out-dir>
       wetool tex info <file.tex>         Describe a texture
       wetool manifest <project.json>     Parse and dump a manifest
+      wetool scene info <wallpaper-dir>  Describe a scene's layers
+      wetool scene render <wallpaper-dir> <out.png> [WxH]
+                                         Render one frame offscreen
     """)
     exit(2)
 }
@@ -143,6 +152,61 @@ case "manifest":
         print("properties: \(properties.count)")
         for (key, property) in properties.sorted(by: { $0.key < $1.key }) {
             print("  \(key): \(property.type.rawValue)\(property.text.map { " — \($0)" } ?? "")")
+        }
+    } catch { fail("\(error)") }
+
+case "scene":
+    guard arguments.count >= 3 else { usage() }
+    let subcommand = arguments[1]
+    let directory = URL(fileURLWithPath: arguments[2])
+    let packageURL = directory.appendingPathComponent("scene.pkg")
+
+    do {
+        let renderDevice = try RenderDevice.system()
+        let scene = try SceneRenderer.loadScene(
+            directory: directory,
+            packageURL: packageURL,
+            wallpaperID: directory.lastPathComponent,
+            device: renderDevice.device
+        )
+
+        print("layers:     \(scene.layers.count)")
+        print("ortho:      \(Int(scene.orthoSize.x))x\(Int(scene.orthoSize.y))")
+        print("clear:      \(scene.clearColor)")
+        for layer in scene.layers {
+            let texture = layer.texture.map { "\($0.width)x\($0.height)" } ?? "none"
+            print("  \(layer.name)  size=\(Int(layer.size.x))x\(Int(layer.size.y)) "
+                  + "origin=(\(Int(layer.origin.x)),\(Int(layer.origin.y))) "
+                  + "blend=\(layer.blend) tex=\(texture)")
+        }
+
+        let findings = scene.report.findings
+        print("compatibility: \(scene.report.level.label) — \(scene.report.summary)")
+        for finding in findings {
+            print("  [\(finding.level)] \(finding.feature)\(finding.detail.map { ": \($0)" } ?? "")")
+        }
+
+        if subcommand == "render" {
+            guard arguments.count >= 4 else { usage() }
+            var width = 1920, height = 1080
+            if arguments.count >= 5 {
+                let parts = arguments[4].lowercased().split(separator: "x")
+                if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                    width = w; height = h
+                }
+            }
+            let renderer = try SceneRenderer(renderDevice: renderDevice)
+            renderer.setScene(scene)
+            guard let image = renderer.renderOffscreen(width: width, height: height) else {
+                fail("offscreen render produced no image")
+            }
+            let outputURL = URL(fileURLWithPath: arguments[3])
+            guard let destination = CGImageDestinationCreateWithURL(
+                outputURL as CFURL, UTType.png.identifier as CFString, 1, nil
+            ) else { fail("could not create \(outputURL.path)") }
+            CGImageDestinationAddImage(destination, image, nil)
+            guard CGImageDestinationFinalize(destination) else { fail("could not write PNG") }
+            print("rendered \(width)x\(height) to \(outputURL.path)")
         }
     } catch { fail("\(error)") }
 
