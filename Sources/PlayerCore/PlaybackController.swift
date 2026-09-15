@@ -30,6 +30,9 @@ public final class PlaybackController {
 
     public init(coordinator: DisplayCoordinator) {
         self.coordinator = coordinator
+        // Before anything else: if a previous run died without restoring, give the user their
+        // own wallpaper back rather than silently keeping ours.
+        desktopPicture.reconcileAfterUngracefulExit()
     }
 
     public func currentItem(for display: CGDirectDisplayID) -> WallpaperItem? {

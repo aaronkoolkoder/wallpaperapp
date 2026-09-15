@@ -66,6 +66,30 @@ public final class DesktopPictureSync {
         }
     }
 
+    /// Recover from an ungraceful exit.
+    ///
+    /// `restoreOriginal()` runs on quit, but a crash, a force-quit, or a power loss never gets
+    /// there — and the user is left with our still as their permanent wallpaper and no obvious
+    /// way to connect that to this app. Called at launch: if the picture currently set is one of
+    /// ours and we still remember what preceded it, put theirs back before doing anything else.
+    ///
+    /// Found by killing the app with SIGKILL during benchmarking, which is exactly how a crash
+    /// would behave.
+    public func reconcileAfterUngracefulExit() {
+        guard let screen = NSScreen.main,
+              let current = NSWorkspace.shared.desktopImageURL(for: screen),
+              let cache = cacheDirectory,
+              current.path.hasPrefix(cache.path)
+        else { return }
+
+        guard defaults.url(forKey: Self.originalKey) != nil else {
+            log.warning("one of our stills is set but no original is remembered; leaving it alone")
+            return
+        }
+        log.info("recovering desktop picture after an ungraceful exit")
+        restoreOriginal()
+    }
+
     // MARK: - Restoring
 
     /// Record what the user had before we touched anything, once.
