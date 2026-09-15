@@ -29,14 +29,14 @@ let package = Package(
 
         .target(name: "SceneEngine", dependencies: ["WEFormat", "MetalRenderer", "ShaderTranspiler", "Diagnostics"]),
 
-        .target(name: "PlayerCore", dependencies: ["WallpaperKit", "SceneEngine", "LibraryKit", "Diagnostics"]),
+        .target(name: "PlayerCore", dependencies: ["WallpaperKit", "LibraryKit", "Diagnostics"]),
 
         .executableTarget(
             name: "DioramaApp",
             dependencies: ["PlayerCore", "WallpaperKit", "LibraryKit", "SceneEngine", "Diagnostics"]
         ),
 
-        .executableTarget(name: "wetool", dependencies: ["WEFormat", "ShaderTranspiler"]),
+        .executableTarget(name: "wetool", dependencies: ["WEFormat", "ShaderTranspiler", "LibraryKit"]),
 
         .testTarget(name: "WEFormatTests", dependencies: ["WEFormat"]),
         .testTarget(name: "ShaderTranspilerTests", dependencies: ["ShaderTranspiler"]),

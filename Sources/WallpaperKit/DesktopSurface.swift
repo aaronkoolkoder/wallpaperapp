@@ -24,11 +24,13 @@ public final class DesktopSurface {
 
     public private(set) var directive: RenderDirective = .suspended(reason: .noContent)
 
-    public var metalLayer: CAMetalLayer? { view.metalLayer }
+    /// The Metal layer, if a Metal backend is currently mounted.
+    public var metalLayer: CAMetalLayer? { (window.contentView as? MetalLayerView)?.metalLayer }
     public var isOccluded: Bool { !window.occlusionState.contains(.visible) }
 
     private let window: NSWindow
-    private let view: MetalLayerView
+    /// The view the display link is attached to. Always the current content view.
+    private var view: NSView
     private var displayLink: CADisplayLink?
     private var occlusionObserver: (any NSObjectProtocol)?
     private let log = Logger(subsystem: "app.diorama", category: "surface")
@@ -37,7 +39,7 @@ public final class DesktopSurface {
         self.screen = screen
         self.displayID = displayID
 
-        view = MetalLayerView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        view = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
         window = NSWindow(
             contentRect: screen.frame,
             styleMask: .borderless,
@@ -60,9 +62,8 @@ public final class DesktopSurface {
         window.displaysWhenScreenProfileChanges = true
         // Never let this window take focus or appear in window cycling.
         window.canHide = false
+        view.wantsLayer = true
         window.contentView = view
-
-        view.onDrawableSizeChange = { [weak self] size in self?.onDrawableSizeChange?(size) }
 
         occlusionObserver = NotificationCenter.default.addObserver(
             forName: NSWindow.didChangeOcclusionStateNotification,
@@ -90,7 +91,54 @@ public final class DesktopSurface {
     }
 
     public func setResolutionScale(_ scale: Double) {
-        view.resolutionScale = scale
+        resolutionScale = scale
+        (view as? MetalLayerView)?.resolutionScale = scale
+    }
+
+    private var resolutionScale: Double = 1.0
+
+    // MARK: - Content mounting
+    //
+    // Backends differ in what they need to put on screen: scenes want a CAMetalLayer, web
+    // wallpapers want a live WKWebView, and video wants an AVSampleBufferDisplayLayer. Rather
+    // than force everything through Metal, the surface hosts whatever view a backend supplies
+    // and re-points the display link at it.
+
+    /// Mount a Metal-backed view and return its layer. Idempotent.
+    @discardableResult
+    public func mountMetalLayer() -> CAMetalLayer? {
+        if let existing = view as? MetalLayerView { return existing.metalLayer }
+
+        let metalView = MetalLayerView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        metalView.resolutionScale = resolutionScale
+        metalView.onDrawableSizeChange = { [weak self] size in self?.onDrawableSizeChange?(size) }
+        mount(metalView)
+        return metalView.metalLayer
+    }
+
+    /// Mount an arbitrary view as the surface's content, replacing whatever was there.
+    public func mount(_ newView: NSView) {
+        let wasRunning = !directive.isSuspended
+        stopDisplayLink()
+
+        newView.frame = NSRect(origin: .zero, size: screen.frame.size)
+        newView.autoresizingMask = [.width, .height]
+        view = newView
+        window.contentView = newView
+
+        // The display link is bound to a specific view, so swapping content requires rebuilding
+        // it against the new one.
+        if wasRunning, case .running(let fps) = directive { startDisplayLink(fps: fps) }
+    }
+
+    /// Drop whatever is mounted and go back to an empty black surface.
+    public func unmountContent() {
+        stopDisplayLink()
+        let empty = NSView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        empty.wantsLayer = true
+        empty.layer?.backgroundColor = .black
+        view = empty
+        window.contentView = empty
     }
 
     /// Apply a policy decision. Starting and stopping the display link — rather than simply

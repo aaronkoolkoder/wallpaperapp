@@ -24,6 +24,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         coordinator.onSurfaceAdded = { [weak self] surface in
             guard let self, let device = self.device else { return }
+            surface.mountMetalLayer()
             self.renderers[surface.displayID] = GradientRenderer(device: device)
             surface.onFrame = { [weak self, weak surface] _ in
                 guard let self, let surface, let layer = surface.metalLayer else { return }
