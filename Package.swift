@@ -42,5 +42,6 @@ let package = Package(
         .testTarget(name: "ShaderTranspilerTests", dependencies: ["ShaderTranspiler"]),
         .testTarget(name: "SceneEngineTests", dependencies: ["SceneEngine"]),
         .testTarget(name: "WallpaperKitTests", dependencies: ["WallpaperKit"]),
+        .testTarget(name: "LibraryKitTests", dependencies: ["LibraryKit"]),
     ]
 )
