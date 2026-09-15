@@ -123,4 +123,12 @@ public struct SceneClock: Sendable {
         frameIndex = 0
         lastTimestamp = nil
     }
+
+    /// Advance by an explicit step, for headless rendering where there is no display link to
+    /// supply timestamps.
+    public mutating func advanceForTesting(delta step: Float) {
+        delta = max(0, step)
+        elapsed += delta
+        frameIndex &+= 1
+    }
 }

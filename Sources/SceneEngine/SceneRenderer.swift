@@ -36,6 +36,10 @@ public final class SceneRenderer {
     /// forbids.
     private var drawScratch: [QuadDraw] = []
 
+    /// Layers as scripts have most recently left them. Refreshed from the scene when it is set,
+    /// then mutated in place each frame so the scene itself stays immutable.
+    private var workingLayers: [RenderableLayer] = []
+
     public init(renderDevice: RenderDevice) throws {
         self.renderDevice = renderDevice
         self.quads = try QuadRenderer(device: renderDevice.device)
@@ -46,6 +50,7 @@ public final class SceneRenderer {
     public func setScene(_ scene: RenderableScene) {
         self.scene = scene
         camera = scene.cameraMotion
+        workingLayers = scene.layers
         clock.reset()
         log.info(
             "scene ready: \(scene.layers.count) layer(s), parallax \(scene.cameraMotion.isEnabled ? "on" : "off")"
@@ -77,6 +82,7 @@ public final class SceneRenderer {
         camera.setPointer(normalized: pointer)
         camera.update(deltaTime: clock.delta)
         let cameraOffset = camera.offset
+        runScripts(scene: scene)
 
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = drawable.texture
@@ -101,7 +107,7 @@ public final class SceneRenderer {
         )
 
         let hasEffects = !scene.sceneEffects.isEmpty
-            || scene.layers.contains { !$0.effects.isEmpty }
+            || workingLayers.contains { !$0.effects.isEmpty }
 
         if !hasEffects {
             // Fast path. Most scenes have no post-processing, and routing them through an
@@ -132,12 +138,33 @@ public final class SceneRenderer {
         framesRendered &+= 1
     }
 
+    /// Evaluate every scripted property for this frame.
+    ///
+    /// Scripts read the value they last produced, so state accumulates in `workingLayers` rather
+    /// than resetting to the authored value each frame — that is what lets a script written as
+    /// `return value + speed * deltaTime` actually animate.
+    private func runScripts(scene: RenderableScene) {
+        guard let runtime = scene.scriptRuntime, !scene.scriptBindings.isEmpty else { return }
+
+        for binding in scene.scriptBindings {
+            guard binding.layerIndex < workingLayers.count else { continue }
+            let current = workingLayers[binding.layerIndex].scriptValue(for: binding.property)
+            guard let result = runtime.evaluate(
+                handle: binding.handle,
+                current: current,
+                deltaTime: Double(clock.delta),
+                elapsed: Double(clock.elapsed)
+            ) else { continue }
+            workingLayers[binding.layerIndex].applyScriptValue(result, to: binding.property)
+        }
+    }
+
     /// Fill `draws` with every visible layer and particle, in composition order.
     private func buildDraws(
         scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [QuadDraw]
     ) {
         draws.removeAll(keepingCapacity: true)
-        for sceneLayer in scene.layers where sceneLayer.isVisible {
+        for sceneLayer in workingLayers where sceneLayer.isVisible {
             draws.append(
                 QuadDraw(
                     transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
@@ -195,7 +222,7 @@ public final class SceneRenderer {
 
         var batch: [QuadDraw] = []
 
-        for sceneLayer in scene.layers where sceneLayer.isVisible {
+        for sceneLayer in workingLayers where sceneLayer.isVisible {
             let draw = QuadDraw(
                 transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
                 tint: sceneLayer.tint,
@@ -348,14 +375,22 @@ extension SceneRenderer {
     ) -> CGImage? {
         guard let scene else { return nil }
 
-        if warmUpSeconds > 0, !scene.particles.isEmpty {
+        // Warm up particles AND scripts together. Running only one of them here is how the
+        // effects path went wrong earlier: the headless harness silently exercised a different
+        // pipeline from the app, so a working feature looked broken in testing.
+        if warmUpSeconds > 0 {
+            workingLayers = scene.layers
             let step: Float = 1.0 / 60
             var remaining = warmUpSeconds
             while remaining > 0 {
                 let dt = min(step, remaining)
                 for system in scene.particles { system.update(deltaTime: dt) }
+                clock.advanceForTesting(delta: dt)
+                runScripts(scene: scene)
                 remaining -= dt
             }
+        } else if workingLayers.count != scene.layers.count {
+            workingLayers = scene.layers
         }
 
         var camera = scene.cameraMotion
@@ -408,7 +443,7 @@ extension SceneRenderer {
             scene: scene, drawableSize: SIMD2(Float(width), Float(height))
         )
 
-        var draws = scene.layers.filter(\.isVisible).map { layer in
+        var draws = workingLayers.filter(\.isVisible).map { layer in
             QuadDraw(
                 transform: layer.modelMatrix(cameraOffset: cameraOffset),
                 tint: layer.tint,

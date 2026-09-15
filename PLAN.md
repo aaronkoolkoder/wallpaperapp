@@ -337,6 +337,7 @@ percent of **one** core, as `ps` reports them.
 | Scene, 3 layers @ 30fps | 1–2% | **0.3%** ✅ | Native Metal. Beats target. |
 | Scene, 900 particles @ 30fps | 1–2% | **0.1%** ✅ | Simulated and drawn every frame. |
 | Scene, particles + 4-pass bloom | 1–2% | **0.1–0.2%** ✅ | Full post chain through the FBO pool. |
+| Scene, 2 scripted properties | 1–2% | **0.3–0.5%** ✅ | JavaScriptCore evaluated per frame. |
 | Video, 1080p H.264 | < 1% | **3.2%** ⚠️ | Misses target. See below. |
 | Video, 4K HEVC 240fps | — | **3.6%** | Apple's own wallpaper format; an outlier, not typical Workshop content. |
 | Idle app, no content | — | **0%**, 45MB RSS | |

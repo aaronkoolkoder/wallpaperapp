@@ -140,6 +140,9 @@ public struct SceneObject: Sendable, Hashable, Codable {
 
     /// Ordered effect chain applied to this object's rendered output.
     public var effects: [SceneEffect]
+    /// SceneScript bodies keyed by the property they animate: `alpha`, `origin`, `angles`,
+    /// `scale`, `color`. Empty for the overwhelming majority of objects.
+    public var scripts: [String: String]
 
     public init(
         id: Int? = nil,
@@ -158,7 +161,8 @@ public struct SceneObject: Sendable, Hashable, Codable {
         text: String? = nil,
         sounds: [String] = [],
         material: String? = nil,
-        effects: [SceneEffect] = []
+        effects: [SceneEffect] = [],
+        scripts: [String: String] = [:]
     ) {
         self.id = id
         self.name = name
@@ -177,6 +181,7 @@ public struct SceneObject: Sendable, Hashable, Codable {
         self.sounds = sounds
         self.material = material
         self.effects = effects
+        self.scripts = scripts
     }
 
     public init(from decoder: Decoder) throws {
@@ -192,6 +197,14 @@ public struct SceneObject: Sendable, Hashable, Codable {
         parallaxDepth = object.value(WEVector2.self, "parallaxDepth")
         color = object.value(WEVector3.self, "color")
         alpha = object.double("alpha")
+
+        // Scripted properties are rare, so this scans a fixed short list rather than walking
+        // every key on every object of every scene.
+        var scripts: [String: String] = [:]
+        for property in ["alpha", "origin", "angles", "scale", "color", "size"] {
+            if let body = object.script(property) { scripts[property] = body }
+        }
+        self.scripts = scripts
 
         image = object.string("image")
         particle = object.string("particle")

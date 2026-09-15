@@ -64,6 +64,11 @@ public struct RenderableScene: @unchecked Sendable {
     public var particles: [ParticleSystem] = []
     /// Post-process chain applied to the fully composited frame.
     public var sceneEffects: [PostEffect] = []
+    /// Compiled SceneScript bindings, evaluated once per frame.
+    public var scriptBindings: [ScriptBinding] = []
+    /// Owns the JavaScript context. Nil when no object in the scene is scripted, which is the
+    /// overwhelming majority — no interpreter is created for a scene that does not need one.
+    public var scriptRuntime: ScriptRuntime?
     public var report: CompatibilityReport
 
     /// Largest distance any layer can be displaced by parallax, in scene units.
@@ -100,6 +105,21 @@ public struct RenderableScene: @unchecked Sendable {
             SIMD4(0, 0, 1, 0),
             SIMD4(0, 0, 0, 1)
         )
+    }
+}
+
+/// Binds one compiled script to the layer property it animates.
+public struct ScriptBinding: Sendable, Hashable {
+    public let layerIndex: Int
+    /// `alpha`, `origin`, `angles`, `scale`, `color`, or `size`.
+    public let property: String
+    /// Opaque handle into the script runtime.
+    public let handle: String
+
+    public init(layerIndex: Int, property: String, handle: String) {
+        self.layerIndex = layerIndex
+        self.property = property
+        self.handle = handle
     }
 }
 
@@ -178,6 +198,8 @@ public struct SceneBuilder {
         var report = CompatibilityReport(wallpaperID: assets.report.wallpaperID)
         var layers: [RenderableLayer] = []
         var systems: [ParticleSystem] = []
+        var bindings: [ScriptBinding] = []
+        var scriptRuntime: ScriptRuntime?
 
         let ortho = document.general?.orthogonalProjection
         let orthoSize = SIMD2<Float>(
@@ -192,7 +214,28 @@ public struct SceneBuilder {
                         object.effects, assets: assets,
                         owner: layer.name, report: &report
                     )
+                    let layerIndex = layers.count
                     layers.append(layer)
+
+                    for (property, body) in object.scripts.sorted(by: { $0.key < $1.key }) {
+                        // Create the interpreter lazily: a scene with no scripts never pays for
+                        // a JSContext at all.
+                        if scriptRuntime == nil { scriptRuntime = ScriptRuntime() }
+                        guard let runtime = scriptRuntime else {
+                            report.add(
+                                .degraded, feature: "Script",
+                                detail: "could not start the script interpreter"
+                            )
+                            break
+                        }
+                        if let handle = runtime.compile(body, name: "\(layer.name).\(property)") {
+                            bindings.append(
+                                ScriptBinding(
+                                    layerIndex: layerIndex, property: property, handle: handle
+                                )
+                            )
+                        }
+                    }
                 }
             case .particle:
                 if let system = buildParticleSystem(
@@ -230,6 +273,7 @@ public struct SceneBuilder {
 
         // Merge in everything the asset resolver recorded while we were loading.
         for finding in assets.report.findings { report.add(finding) }
+        for finding in scriptRuntime?.findings ?? [] { report.add(finding) }
 
         let clear = document.general?.clearColor
         return RenderableScene(
@@ -241,6 +285,8 @@ public struct SceneBuilder {
             cameraMotion: CameraMotion(general: document.general),
             particles: systems,
             sceneEffects: sceneEffects,
+            scriptBindings: bindings,
+            scriptRuntime: scriptRuntime,
             report: report
         )
     }

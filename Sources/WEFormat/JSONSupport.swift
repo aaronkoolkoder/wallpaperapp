@@ -154,6 +154,32 @@ struct CaseInsensitiveContainer {
         return container.lenientBool(key)
     }
 
+    /// Extract a SceneScript body from a property written in object form.
+    ///
+    /// Wallpaper Engine writes an animated property either as a plain value (`"alpha": 1`) or
+    /// as an object carrying a script alongside its initial value
+    /// (`"alpha": {"value": 1, "script": "..."}`). Callers read the plain value through the
+    /// normal accessors, which already tolerate the object form returning nil.
+    ///
+    /// - TODO(verify): the object shape is inferred from the format's general structure rather
+    ///   than confirmed against real Workshop content, which this project has none of yet. The
+    ///   extraction is deliberately permissive so an unexpected shape yields no script rather
+    ///   than failing the wallpaper.
+    func script(_ name: String) -> String? {
+        struct ScriptCarrier: Decodable {
+            var script: String?
+            private enum CodingKeys: String, CodingKey { case script }
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                script = try? container.decodeIfPresent(String.self, forKey: .script)
+            }
+        }
+        guard let carrier = value(ScriptCarrier.self, name), let body = carrier.script,
+              !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return body
+    }
+
     func stringArray(_ name: String) -> [String]? {
         guard let key = keys[name.lowercased()] else { return nil }
         return container.lenientStringArray(key)
