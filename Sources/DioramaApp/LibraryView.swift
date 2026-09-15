@@ -24,21 +24,11 @@ enum LibraryFilter: Hashable, Identifiable, CaseIterable {
 
     var symbol: String {
         switch self {
-        case .all: "square.grid.2x2.fill"
-        case .scenes: "cube.transparent.fill"
-        case .videos: "film.fill"
+        case .all: "square.grid.2x2"
+        case .scenes: "cube.transparent"
+        case .videos: "play.rectangle"
         case .web: "globe"
-        case .unsupported: "exclamationmark.triangle.fill"
-        }
-    }
-
-    var tint: Color {
-        switch self {
-        case .all: .accentColor
-        case .scenes: .purple
-        case .videos: .blue
-        case .web: .teal
-        case .unsupported: .orange
+        case .unsupported: "exclamationmark.triangle"
         }
     }
 
@@ -119,17 +109,14 @@ struct LibraryView: View {
         List(selection: $filter) {
             Section("Library") {
                 ForEach(LibraryFilter.allCases) { entry in
-                    Label {
-                        Text(entry.title)
-                    } icon: {
-                        Image(systemName: entry.symbol)
-                            .foregroundStyle(entry.tint)
-                    }
-                    .badge(store.items.filter { entry.matches($0) }.count)
-                    .tag(entry)
+                    Label(entry.title, systemImage: entry.symbol)
+                        .badge(store.items.filter { entry.matches($0) }.count)
+                        .tag(entry)
                 }
             }
         }
+        .scrollContentBackground(.hidden)
+        .background(Design.Surface.recessed)
         .navigationSplitViewColumnWidth(min: 212, ideal: 228, max: 300)
         .safeAreaInset(edge: .bottom) { sidebarFooter }
     }
@@ -212,6 +199,7 @@ struct LibraryView: View {
             .padding(Design.Space.gutter)
         }
         .scrollContentBackground(.hidden)
+        .background(Design.Surface.base)
         .searchable(text: $search, placement: .toolbar, prompt: "Search wallpapers")
     }
 
@@ -262,35 +250,38 @@ struct EmptyLibraryView: View {
 
     var body: some View {
         VStack(spacing: 22) {
-            Image(systemName: "sparkles.rectangle.stack")
-                .font(.system(size: 54))
-                .foregroundStyle(.tint)
+            Image(systemName: "square.stack.3d.up")
+                .font(.system(size: 46, weight: .light))
+                .foregroundStyle(Design.Ink.tertiary)
 
-            VStack(spacing: 7) {
+            VStack(spacing: 8) {
                 Text("Bring your wallpapers over")
-                    .font(.title2.weight(.semibold))
+                    .font(.system(size: 21, weight: .semibold))
+                    .foregroundStyle(Design.Ink.primary)
                 Text("Copy this folder from your PC, then choose it here.")
-                    .foregroundStyle(.secondary)
+                    .font(.callout)
+                    .foregroundStyle(Design.Ink.secondary)
             }
 
             Text(verbatim: #"C:\Program Files (x86)\Steam\steamapps\workshop\content\431960"#)
                 .font(.system(.callout, design: .monospaced))
                 .textSelection(.enabled)
+                .foregroundStyle(Design.Ink.secondary)
                 .padding(.horizontal, 16)
                 .padding(.vertical, 11)
-                .panelSurface(radius: Design.Radius.chip)
+                .raisedSurface(radius: Design.Radius.control, fill: Design.Surface.inset)
 
             Text("AirDrop, a USB drive, or a shared folder all work. Nothing is uploaded "
                  + "anywhere — the files stay on your Mac.")
                 .font(.callout)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Design.Ink.tertiary)
                 .multilineTextAlignment(.center)
                 .frame(maxWidth: 430)
 
             if let accessError {
                 Label(accessError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(Design.Status.warning)
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 430)
             }

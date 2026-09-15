@@ -26,6 +26,10 @@ import WallpaperKit
 @MainActor
 enum GUIPreviewRenderer {
     static func renderAll(to directory: URL) {
+        // The palette is tuned for dark; rendering the light variant only would hide exactly
+        // the surfaces being designed. Both are emitted so the light path stays honest too.
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+
         let model = makePreviewModel()
 
         write(
@@ -54,6 +58,12 @@ enum GUIPreviewRenderer {
         )
 
         write(
+            LibraryChromePreview(items: [sample, unsupportedItem()])
+                .frame(width: 900, height: 560),
+            to: directory.appendingPathComponent("library-window.png")
+        )
+
+        write(
             InspectorPanel(item: sample, isPlaying: true, onPlay: {})
                 .frame(width: 300, height: 700),
             to: directory.appendingPathComponent("inspector.png")
@@ -69,8 +79,17 @@ enum GUIPreviewRenderer {
     }
 
     private static func write(_ view: some View, to url: URL) {
+        // Dynamic NSColor providers resolve against `NSAppearance.current`, not against
+        // `NSApp.appearance`, and ImageRenderer does not set it. Without this the palette
+        // silently renders its light variant — which is the one case the design is not tuned
+        // for, and would have made every surface here look wrong for reasons unrelated to the
+        // design itself.
+        NSAppearance.current = NSAppearance(named: .darkAqua)
+
         let renderer = ImageRenderer(
-            content: view.environment(\.isOffscreenRendering, true)
+            content: view
+                .environment(\.isOffscreenRendering, true)
+                .environment(\.colorScheme, .dark)
         )
         // Render at 2x so the output matches what a Retina display actually shows, including
         // whether text is clipped at real pixel sizes.
@@ -121,6 +140,72 @@ enum GUIPreviewRenderer {
             ),
         ])
         return model
+    }
+}
+
+/// Approximates the window's composition — rail, gallery, inspector — for offscreen review.
+///
+/// The real window is a `NavigationSplitView` with an `.inspector`, neither of which lays out
+/// under `ImageRenderer`. This mirrors the arrangement with plain stacks so the palette and
+/// spacing can be judged; it is a design proof, not the shipping view, and is never presented as
+/// having exercised the real container.
+private struct LibraryChromePreview: View {
+    let items: [WallpaperItem]
+
+    var body: some View {
+        HStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 3) {
+                SectionLabel("Library")
+                    .padding(.horizontal, 12)
+                    .padding(.bottom, 4)
+                ForEach(LibraryFilter.allCases) { filter in
+                    HStack(spacing: 9) {
+                        Image(systemName: filter.symbol)
+                            .font(.system(size: 12))
+                            .frame(width: 16)
+                        Text(filter.title).font(.system(size: 12.5))
+                        Spacer()
+                        Text(filter == .all ? "2" : "1")
+                            .font(.caption2)
+                            .foregroundStyle(Design.Ink.tertiary)
+                    }
+                    .foregroundStyle(filter == .all ? Design.Ink.primary : Design.Ink.secondary)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(
+                        filter == .all ? Design.Surface.inset : .clear,
+                        in: .rect(cornerRadius: Design.Radius.chip)
+                    )
+                    .padding(.horizontal, 6)
+                }
+                Spacer()
+            }
+            .padding(.top, 16)
+            .frame(width: 214)
+            .background(Design.Surface.recessed)
+
+            VStack(spacing: 0) {
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 220, maximum: 300), spacing: Design.Space.grid)],
+                    spacing: Design.Space.grid
+                ) {
+                    ForEach(items) { item in
+                        WallpaperCard(
+                            item: item, isSelected: item.isPlayable,
+                            isPlaying: item.isPlayable, onPlay: {}
+                        )
+                    }
+                }
+                .padding(Design.Space.gutter)
+                Spacer()
+            }
+            .frame(maxWidth: .infinity)
+            .background(Design.Surface.base)
+
+            InspectorPanel(item: items.first, isPlaying: true, onPlay: {})
+                .frame(width: 300)
+                .background(Design.Surface.recessed)
+        }
     }
 }
 

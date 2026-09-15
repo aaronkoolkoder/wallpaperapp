@@ -87,45 +87,60 @@ struct InspectorPanel: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             HStack(spacing: 5) {
-                Chip(
-                    text: item.typeLabel,
-                    systemImage: item.appearance.symbol,
-                    tint: item.appearance.tint
-                )
+                // Monochrome: type is a category, not a status, so it gets a symbol and a tone.
+                Chip(text: item.typeLabel, systemImage: item.appearance.symbol)
                 if let rating = item.contentRating, rating != "Everyone" {
-                    Chip(text: rating, systemImage: "exclamationmark.shield.fill", tint: .orange)
+                    Chip(text: rating, systemImage: "exclamationmark.shield", tint: Design.Status.warning)
                 }
                 if isPlaying {
-                    Chip(text: "Playing", systemImage: "waveform", tint: .green)
+                    Chip(
+                        text: "Playing", systemImage: "waveform",
+                        tint: Design.Status.playing, isProminent: true
+                    )
                 }
             }
         }
     }
 
+    @ViewBuilder
     private func actions(for item: WallpaperItem) -> some View {
-        Button(action: onPlay) {
-            Label(
-                isPlaying ? "Playing on All Displays" : "Set as Wallpaper",
-                systemImage: isPlaying ? "checkmark" : "play.fill"
-            )
+        if isPlaying {
+            // A state, not a disabled control. A greyed-out prominent button reads as something
+            // you failed to be allowed to press, rather than as something already true.
+            HStack(spacing: 6) {
+                Image(systemName: "checkmark.circle.fill")
+                Text("Playing on all displays")
+            }
+            .font(.callout.weight(.medium))
+            .foregroundStyle(Design.Status.playing)
             .frame(maxWidth: .infinity)
+            .padding(.vertical, 11)
+            .background(
+                Design.Status.playing.opacity(0.12),
+                in: .rect(cornerRadius: Design.Radius.control)
+            )
+        } else {
+            Button(action: onPlay) {
+                Label("Set as Wallpaper", systemImage: "play.fill")
+                    .frame(maxWidth: .infinity)
+            }
+            .controlSize(.large)
+            .buttonStyle(.borderedProminent)
+            .disabled(!item.isPlayable)
         }
-        .controlSize(.large)
-        .buttonStyle(.borderedProminent)
-        .disabled(!item.isPlayable || isPlaying)
     }
 
     private func unsupportedNotice(_ reason: String) -> some View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundStyle(.orange)
+                .foregroundStyle(Design.Status.warning)
             Text(reason)
                 .font(.callout)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(11)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.orange.opacity(0.12), in: .rect(cornerRadius: Design.Radius.chip))
+        .background(Design.Status.warning.opacity(0.12), in: .rect(cornerRadius: Design.Radius.chip))
     }
 
     private func tags(for item: WallpaperItem) -> some View {
@@ -151,7 +166,7 @@ struct InspectorPanel: View {
                     if key != item.properties.keys.sorted().last { Divider().opacity(0.4) }
                 }
             }
-            .panelSurface(radius: Design.Radius.chip)
+            .raisedSurface(radius: Design.Radius.control, fill: Design.Surface.inset)
 
             Text("Editing these is not wired up yet.")
                 .font(.caption2)
@@ -189,18 +204,6 @@ struct InspectorPanel: View {
 }
 
 // MARK: - Pieces
-
-private struct SectionLabel: View {
-    let text: String
-    init(_ text: String) { self.text = text }
-
-    var body: some View {
-        Text(text.uppercased())
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
-            .tracking(0.6)
-    }
-}
 
 private struct DetailRow: View {
     let label: String
