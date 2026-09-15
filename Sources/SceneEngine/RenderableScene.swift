@@ -85,7 +85,11 @@ public struct SceneBuilder {
         assets: SceneAssets,
         device: any MTLDevice
     ) -> RenderableScene {
-        var report = assets.report
+        // Findings raised *during* this build only. The asset resolver's own findings are
+        // merged at the end, not snapshotted here: CompatibilityReport is a value type, so
+        // copying it up front would silently discard every missing-texture and missing-material
+        // finding raised by the lookups below. Caught by a test.
+        var report = CompatibilityReport(wallpaperID: assets.report.wallpaperID)
         var layers: [RenderableLayer] = []
 
         let ortho = document.general?.orthogonalProjection
@@ -128,6 +132,9 @@ public struct SceneBuilder {
                 detail: "post-processing effect chains are not applied yet"
             )
         }
+
+        // Merge in everything the asset resolver recorded while we were loading.
+        for finding in assets.report.findings { report.add(finding) }
 
         let clear = document.general?.clearColor
         return RenderableScene(
