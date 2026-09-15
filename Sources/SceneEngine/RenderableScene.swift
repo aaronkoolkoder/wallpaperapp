@@ -58,6 +58,8 @@ public struct RenderableScene: @unchecked Sendable {
     public var clearColor: SIMD4<Float>
     /// Parallax configuration as the scene declared it.
     public var cameraMotion: CameraMotion
+    /// Live particle emitters, simulated each frame.
+    public var particles: [ParticleSystem] = []
     public var report: CompatibilityReport
 
     /// Largest distance any layer can be displaced by parallax, in scene units.
@@ -125,6 +127,7 @@ public struct SceneBuilder {
         // finding raised by the lookups below. Caught by a test.
         var report = CompatibilityReport(wallpaperID: assets.report.wallpaperID)
         var layers: [RenderableLayer] = []
+        var systems: [ParticleSystem] = []
 
         let ortho = document.general?.orthogonalProjection
         let orthoSize = SIMD2<Float>(
@@ -138,10 +141,11 @@ public struct SceneBuilder {
                     layers.append(layer)
                 }
             case .particle:
-                report.add(
-                    .degraded, feature: "Particle systems",
-                    detail: object.name.map { "\"\($0)\" is not drawn yet" }
-                )
+                if let system = buildParticleSystem(
+                    object, assets: assets, device: device, report: &report
+                ) {
+                    systems.append(system)
+                }
             case .text:
                 report.add(
                     .degraded, feature: "Text layers",
@@ -178,8 +182,49 @@ public struct SceneBuilder {
                 Float(clear?.x ?? 0), Float(clear?.y ?? 0), Float(clear?.z ?? 0), 1
             ),
             cameraMotion: CameraMotion(general: document.general),
+            particles: systems,
             report: report
         )
+    }
+
+    private func buildParticleSystem(
+        _ object: SceneObject,
+        assets: SceneAssets,
+        device: any MTLDevice,
+        report: inout CompatibilityReport
+    ) -> ParticleSystem? {
+        guard let path = object.particle else { return nil }
+        guard let data = assets.data(for: path) ?? assets.data(for: path + ".json") else {
+            report.add(.degraded, feature: "Particle system", detail: "\(path) is missing")
+            return nil
+        }
+
+        let document: ParticleDocument
+        do {
+            document = try JSONDecoder().decode(ParticleDocument.self, from: data)
+        } catch {
+            report.add(.degraded, feature: "Particle system", detail: "\(path) could not be parsed")
+            return nil
+        }
+
+        let system = ParticleSystem(document: document)
+        let origin = object.origin ?? WEVector3(0, 0, 0)
+        system.origin = SIMD3(Float(origin.x), Float(origin.y), Float(origin.z))
+
+        // Particles are almost always additive; that is what makes snow, embers and dust read
+        // as light rather than as opaque sprites.
+        if let materialPath = system.materialPath,
+           let material = assets.material(at: materialPath),
+           let pass = material.firstPass {
+            system.blend = Self.blendMode(named: pass.blending)
+            if let texturePath = pass.primaryTexture {
+                system.texture = assets.texture(at: texturePath, device: device)
+            }
+        }
+
+        // Surface whatever behaviours the emitter needed and we do not implement.
+        for finding in system.findings { report.add(finding) }
+        return system
     }
 
     private func buildImageLayer(

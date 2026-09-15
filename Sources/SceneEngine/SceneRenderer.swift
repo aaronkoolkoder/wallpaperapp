@@ -30,6 +30,11 @@ public final class SceneRenderer {
     /// frame; the renderer itself never touches AppKit.
     public var pointer: SIMD2<Float> = .zero
 
+    /// Reused across frames. Particle emitters can produce thousands of draws, and rebuilding
+    /// this array every frame would allocate on the render path — exactly what PLAN.md §6.2
+    /// forbids.
+    private var drawScratch: [QuadDraw] = []
+
     public init(renderDevice: RenderDevice) throws {
         self.renderDevice = renderDevice
         self.quads = try QuadRenderer(device: renderDevice.device)
@@ -93,18 +98,25 @@ public final class SceneRenderer {
             drawableSize: SIMD2(Float(drawable.texture.width), Float(drawable.texture.height))
         )
 
-        let draws = scene.layers
-            .filter(\.isVisible)
-            .map { layer in
+        drawScratch.removeAll(keepingCapacity: true)
+        for sceneLayer in scene.layers where sceneLayer.isVisible {
+            drawScratch.append(
                 QuadDraw(
-                    transform: layer.modelMatrix(cameraOffset: cameraOffset),
-                    tint: layer.tint,
-                    texture: layer.texture,
-                    blend: layer.blend
+                    transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
+                    tint: sceneLayer.tint,
+                    texture: sceneLayer.texture,
+                    blend: sceneLayer.blend
                 )
-            }
+            )
+        }
 
-        quads.encode(draws, into: encoder, projection: projection, pixelFormat: layer.pixelFormat)
+        // Particles draw after the layers, which is where scene authors expect them.
+        for system in scene.particles {
+            system.update(deltaTime: clock.delta)
+            system.appendDraws(to: &drawScratch, cameraOffset: cameraOffset)
+        }
+
+        quads.encode(drawScratch, into: encoder, projection: projection, pixelFormat: layer.pixelFormat)
         encoder.endEncoding()
         buffer.present(drawable)
         buffer.commit()
@@ -159,10 +171,23 @@ extension SceneRenderer {
     /// - Parameter pointer: normalised pointer position, so parallax can be exercised without
     ///   a live cursor. Settles the camera immediately rather than easing, since a single
     ///   offscreen frame has no history to ease from.
+    /// - Parameter warmUpSeconds: simulate this long before capturing. Particle emitters start
+    ///   empty, so a cold single frame of a snow scene renders nothing at all and would make a
+    ///   working emitter look broken.
     public func renderOffscreen(
-        width: Int, height: Int, pointer: SIMD2<Float> = .zero
+        width: Int, height: Int, pointer: SIMD2<Float> = .zero, warmUpSeconds: Float = 0
     ) -> CGImage? {
         guard let scene else { return nil }
+
+        if warmUpSeconds > 0, !scene.particles.isEmpty {
+            let step: Float = 1.0 / 60
+            var remaining = warmUpSeconds
+            while remaining > 0 {
+                let dt = min(step, remaining)
+                for system in scene.particles { system.update(deltaTime: dt) }
+                remaining -= dt
+            }
+        }
 
         var camera = scene.cameraMotion
         camera.delay = 0
@@ -199,13 +224,16 @@ extension SceneRenderer {
         let projection = aspectFilledProjectionForTesting(
             scene: scene, drawableSize: SIMD2(Float(width), Float(height))
         )
-        let draws = scene.layers.filter(\.isVisible).map { layer in
+        var draws = scene.layers.filter(\.isVisible).map { layer in
             QuadDraw(
                 transform: layer.modelMatrix(cameraOffset: cameraOffset),
                 tint: layer.tint,
                 texture: layer.texture,
                 blend: layer.blend
             )
+        }
+        for system in scene.particles {
+            system.appendDraws(to: &draws, cameraOffset: cameraOffset)
         }
 
         quads.encode(draws, into: encoder, projection: projection, pixelFormat: .bgra8Unorm)

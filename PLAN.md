@@ -335,6 +335,7 @@ percent of **one** core, as `ps` reports them.
 | No wallpaper set | 0% | **0%** ✅ | |
 | Static image / scene preview | < 1% | **0%** ✅ | Handed to the compositor once; no display link, no per-frame work. |
 | Scene, 3 layers @ 30fps | 1–2% | **0.3%** ✅ | Native Metal. Beats target. |
+| Scene, 900 particles @ 30fps | 1–2% | **0.1%** ✅ | Simulated and drawn every frame. |
 | Video, 1080p H.264 | < 1% | **3.2%** ⚠️ | Misses target. See below. |
 | Video, 4K HEVC 240fps | — | **3.6%** | Apple's own wallpaper format; an outlier, not typical Workshop content. |
 | Idle app, no content | — | **0%**, 45MB RSS | |

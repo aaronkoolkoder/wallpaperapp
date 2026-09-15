@@ -211,7 +211,16 @@ public final class QuadRenderer {
                                   constant Uniforms &u [[buffer(0)]],
                                   texture2d<float> tex [[texture(0)]],
                                   sampler samp [[sampler(0)]]) {
-        return tex.sample(samp, in.uv) * u.tint;
+        float4 color = tex.sample(samp, in.uv) * u.tint;
+
+        // Wallpaper Engine textures carry STRAIGHT alpha, but every blend mode here is
+        // premultiplied. Converting at sample time is what makes soft-edged content actually
+        // look soft: without this, a premultiplied-additive pass adds RGB at full strength
+        // regardless of alpha, so an anti-aliased particle sprite renders as a hard square.
+        // Doing it in the shader rather than by picking non-premultiplied blend factors keeps
+        // one consistent convention across all modes.
+        color.rgb *= color.a;
+        return color;
     }
     """
 }

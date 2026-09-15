@@ -173,6 +173,10 @@ case "scene":
         )
 
         print("layers:     \(scene.layers.count)")
+        if !scene.particles.isEmpty {
+            let total = scene.particles.reduce(0) { $0 + $1.maxCount }
+            print("particles:  \(scene.particles.count) emitter(s), up to \(total)")
+        }
         print("ortho:      \(Int(scene.orthoSize.x))x\(Int(scene.orthoSize.y))")
         print("clear:      \(scene.clearColor)")
         for layer in scene.layers {
@@ -207,7 +211,7 @@ case "scene":
             let renderer = try SceneRenderer(renderDevice: renderDevice)
             renderer.setScene(scene)
             guard let image = renderer.renderOffscreen(
-                width: width, height: height, pointer: pointer
+                width: width, height: height, pointer: pointer, warmUpSeconds: 3
             ) else {
                 fail("offscreen render produced no image")
             }

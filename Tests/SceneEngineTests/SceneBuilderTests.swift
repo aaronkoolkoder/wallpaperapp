@@ -96,9 +96,12 @@ struct SceneBuilderTests {
         #expect(scene.layers.first?.name == "Backdrop")
         #expect(scene.orthoSize == SIMD2(1920, 1080))
 
-        // The particle object must be reported, not silently dropped.
+        // The fixture names a particle file that does not exist. That must be reported with
+        // the path, not silently dropped — a scene missing its snow should say why.
         #expect(scene.report.level == .degraded)
-        #expect(scene.report.findings.contains { $0.feature == "Particle systems" })
+        #expect(scene.report.findings.contains {
+            $0.feature == "Particle system" && $0.detail?.contains("particles/dust.json") == true
+        })
     }
 
     @Test("A missing material degrades that layer without failing the scene")
