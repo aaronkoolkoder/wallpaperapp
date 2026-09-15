@@ -66,6 +66,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             library.restore()
         }
 
+        // DIORAMA_STRESS=<cycles> repeatedly switches between every playable wallpaper and
+        // reports resident memory, to catch resources that are not released on teardown. A
+        // wallpaper app that leaks a few MB per switch looks fine in a demo and is unusable
+        // after a week of real use, which is exactly the failure this is meant to surface.
+        if let raw = ProcessInfo.processInfo.environment["DIORAMA_STRESS"],
+           let cycles = Int(raw) {
+            Task { @MainActor in await self.runStress(cycles: cycles) }
+        }
+
         // DIORAMA_PLAY=<workshop-id> starts a wallpaper once the scan finishes.
         if let wanted = ProcessInfo.processInfo.environment["DIORAMA_PLAY"] {
             Task { @MainActor in
@@ -103,6 +112,57 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 log.info("\(item.title, privacy: .public): \(report.summary, privacy: .public)")
             }
         }
+    }
+
+    /// Cycle every playable wallpaper `cycles` times, sampling memory between passes.
+    private func runStress(cycles: Int) async {
+        for _ in 0 ..< 60 where library.items.isEmpty {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        let playable = library.items.filter(\.isPlayable)
+        guard !playable.isEmpty else {
+            log.error("stress: no playable wallpapers")
+            NSApp.terminate(nil)
+            return
+        }
+
+        log.info("stress: \(cycles) cycle(s) over \(playable.count) wallpaper(s)")
+        let baseline = Self.residentBytes()
+        print("stress baseline: \(Self.format(baseline))")
+
+        for cycle in 1 ... cycles {
+            for item in playable {
+                play(item)
+                try? await Task.sleep(for: .milliseconds(220))
+            }
+            playback?.stopAll()
+            try? await Task.sleep(for: .milliseconds(120))
+
+            let now = Self.residentBytes()
+            let delta = Int64(now) - Int64(baseline)
+            print(
+                "cycle \(cycle): \(Self.format(now)) "
+                + "(\(delta >= 0 ? "+" : "")\(Self.format(UInt64(abs(delta)))) vs baseline)"
+            )
+        }
+        NSApp.terminate(nil)
+    }
+
+    private static func residentBytes() -> UInt64 {
+        var info = mach_task_basic_info()
+        var count = mach_msg_type_number_t(
+            MemoryLayout<mach_task_basic_info>.size / MemoryLayout<natural_t>.size
+        )
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(MACH_TASK_BASIC_INFO), $0, &count)
+            }
+        }
+        return result == KERN_SUCCESS ? info.resident_size : 0
+    }
+
+    private static func format(_ bytes: UInt64) -> String {
+        String(format: "%.1fMB", Double(bytes) / 1_048_576)
     }
 
     // MARK: - Windows

@@ -24,7 +24,7 @@ public enum ScriptValue: Sendable, Hashable {
     static func from(_ value: JSValue?) -> ScriptValue? {
         guard let value, !value.isUndefined, !value.isNull else { return nil }
         if value.isNumber { return .number(value.toDouble()) }
-        if value.isArray, let array = value.toArray() as? [Any] {
+        if value.isArray, let array = value.toArray() {
             let numbers = array.compactMap { ($0 as? NSNumber)?.doubleValue }
             if numbers.count >= 3 { return .vector3(SIMD3(numbers[0], numbers[1], numbers[2])) }
             if numbers.count == 2 { return .vector2(SIMD2(numbers[0], numbers[1])) }

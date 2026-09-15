@@ -79,13 +79,6 @@ enum GUIPreviewRenderer {
     }
 
     private static func write(_ view: some View, to url: URL) {
-        // Dynamic NSColor providers resolve against `NSAppearance.current`, not against
-        // `NSApp.appearance`, and ImageRenderer does not set it. Without this the palette
-        // silently renders its light variant — which is the one case the design is not tuned
-        // for, and would have made every surface here look wrong for reasons unrelated to the
-        // design itself.
-        NSAppearance.current = NSAppearance(named: .darkAqua)
-
         let renderer = ImageRenderer(
             content: view
                 .environment(\.isOffscreenRendering, true)
@@ -95,7 +88,16 @@ enum GUIPreviewRenderer {
         // whether text is clipped at real pixel sizes.
         renderer.scale = 2
 
-        guard let image = renderer.cgImage else {
+        // Dynamic NSColor providers resolve against the *drawing* appearance, not against
+        // `NSApp.appearance`, and ImageRenderer does not set it. Without this the palette
+        // silently renders its light variant — the one case it is not tuned for.
+        var rendered: CGImage?
+        let appearance = NSAppearance(named: .darkAqua) ?? NSAppearance.currentDrawing()
+        appearance.performAsCurrentDrawingAppearance {
+            rendered = renderer.cgImage
+        }
+
+        guard let image = rendered else {
             FileHandle.standardError.write(Data("could not render \(url.lastPathComponent)\n".utf8))
             return
         }

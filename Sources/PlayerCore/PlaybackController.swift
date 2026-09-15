@@ -23,7 +23,8 @@ public final class PlaybackController {
     ///
     /// On by default because without it the menu bar and Mission Control keep tinting for the
     /// user's previous wallpaper, which reads as a rendering bug.
-    public var syncsDesktopPicture = true
+    public var syncsDesktopPicture =
+        ProcessInfo.processInfo.environment["DIORAMA_NO_DESKTOP_SYNC"] != "1"
 
     /// Fired after a wallpaper starts or fails, carrying the compatibility verdict.
     public var onReport: ((CGDirectDisplayID, CompatibilityReport) -> Void)?
