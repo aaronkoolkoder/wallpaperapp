@@ -24,6 +24,23 @@ public final class DesktopSurface {
 
     public private(set) var directive: RenderDirective = .suspended(reason: .noContent)
 
+    /// Whether this surface needs a display link at all.
+    ///
+    /// False for content that drives its own frames — `AVPlayerLayer` schedules from the video's
+    /// own timebase, `WKWebView` from requestAnimationFrame, a still image never. Running a link
+    /// for those wakes the process at the frame rate to call a callback that does nothing, which
+    /// is exactly the kind of idle cost this project exists to avoid.
+    public var needsDisplayLink: Bool = true {
+        didSet {
+            guard needsDisplayLink != oldValue else { return }
+            if needsDisplayLink, case .running(let fps) = directive {
+                startDisplayLink(fps: fps)
+            } else if !needsDisplayLink {
+                stopDisplayLink()
+            }
+        }
+    }
+
     /// The Metal layer, if a Metal backend is currently mounted.
     public var metalLayer: CAMetalLayer? { (window.contentView as? MetalLayerView)?.metalLayer }
     public var isOccluded: Bool { !window.occlusionState.contains(.visible) }
@@ -128,7 +145,9 @@ public final class DesktopSurface {
 
         // The display link is bound to a specific view, so swapping content requires rebuilding
         // it against the new one.
-        if wasRunning, case .running(let fps) = directive { startDisplayLink(fps: fps) }
+        if wasRunning, needsDisplayLink, case .running(let fps) = directive {
+            startDisplayLink(fps: fps)
+        }
     }
 
     /// Drop whatever is mounted and go back to an empty black surface.
@@ -152,8 +171,12 @@ public final class DesktopSurface {
             stopDisplayLink()
             log.info("display \(self.displayID) suspended: \(reason.rawValue, privacy: .public)")
         case .running(let fps):
-            startDisplayLink(fps: fps)
-            log.info("display \(self.displayID) running at \(fps)fps")
+            if needsDisplayLink {
+                startDisplayLink(fps: fps)
+                log.info("display \(self.displayID) running at \(fps)fps")
+            } else {
+                log.info("display \(self.displayID) running, content self-driven")
+            }
         }
     }
 

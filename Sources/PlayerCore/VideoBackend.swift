@@ -17,6 +17,7 @@ import os
 @MainActor
 public final class VideoBackend: WallpaperBackend {
     public static let kind: WallpaperKind = .video
+    public static let needsDisplayLink = false
 
     public private(set) var contentFrameRate: Int?
     public private(set) var report: CompatibilityReport
@@ -44,6 +45,20 @@ public final class VideoBackend: WallpaperBackend {
             options: [AVURLAssetPreferPreciseDurationAndTimingKey: true]
         )
         let item = AVPlayerItem(asset: asset)
+
+        // Decode no more pixels than the display can actually show. Workshop video wallpapers
+        // are routinely 4K, and Apple's own are 4K at 240fps for scrubbing; decoding all of that
+        // to composite into a 3024x1964 backdrop is the dominant cost of a video wallpaper, and
+        // it buys nothing visible.
+        if let screen = surface.screen.deviceDescription[
+            NSDeviceDescriptionKey("NSDeviceSize")
+        ] as? NSValue {
+            let points = screen.sizeValue
+            let scale = surface.screen.backingScaleFactor
+            item.preferredMaximumResolution = CGSize(
+                width: points.width * scale, height: points.height * scale
+            )
+        }
 
         let queuePlayer = AVQueuePlayer()
         queuePlayer.isMuted = request.isMuted

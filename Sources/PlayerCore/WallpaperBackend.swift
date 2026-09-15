@@ -66,6 +66,12 @@ public struct WallpaperRequest: Sendable {
 public protocol WallpaperBackend: AnyObject {
     static var kind: WallpaperKind { get }
 
+    /// Whether this backend needs the surface's display link to drive it.
+    ///
+    /// False for anything that schedules its own frames. Only Metal-rendered scenes need an
+    /// external clock.
+    static var needsDisplayLink: Bool { get }
+
     /// The content's own frame rate, when it declares one. Feeds the power policy so we never
     /// render faster than the content actually changes.
     var contentFrameRate: Int? { get }

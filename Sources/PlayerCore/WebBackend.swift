@@ -14,6 +14,7 @@ import os
 @MainActor
 public final class WebBackend: NSObject, WallpaperBackend {
     public static let kind: WallpaperKind = .web
+    public static let needsDisplayLink = false
 
     /// Web wallpapers drive their own animation through rAF, so there is no meaningful external
     /// frame rate to report. The display link does not drive them.

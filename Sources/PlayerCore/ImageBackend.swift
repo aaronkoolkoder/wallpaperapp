@@ -12,6 +12,7 @@ import os
 @MainActor
 public final class ImageBackend: WallpaperBackend {
     public static let kind: WallpaperKind = .image
+    public static let needsDisplayLink = false
 
     public private(set) var contentFrameRate: Int?
     public private(set) var report: CompatibilityReport
