@@ -22,6 +22,14 @@ public final class SceneRenderer {
     public private(set) var scene: RenderableScene?
     public private(set) var framesRendered: UInt64 = 0
 
+    /// Scene time and camera state, advanced once per frame.
+    public private(set) var clock = SceneClock()
+    private var camera = CameraMotion()
+
+    /// Pointer position normalised to [-1, 1] about the screen centre. Set by the backend each
+    /// frame; the renderer itself never touches AppKit.
+    public var pointer: SIMD2<Float> = .zero
+
     public init(renderDevice: RenderDevice) throws {
         self.renderDevice = renderDevice
         self.quads = try QuadRenderer(device: renderDevice.device)
@@ -30,7 +38,11 @@ public final class SceneRenderer {
 
     public func setScene(_ scene: RenderableScene) {
         self.scene = scene
-        log.info("scene ready: \(scene.layers.count) layer(s)")
+        camera = scene.cameraMotion
+        clock.reset()
+        log.info(
+            "scene ready: \(scene.layers.count) layer(s), parallax \(scene.cameraMotion.isEnabled ? "on" : "off")"
+        )
     }
 
     /// Load, build and hand over a scene in one step.
@@ -50,9 +62,14 @@ public final class SceneRenderer {
         return SceneBuilder().build(document: document, assets: assets, device: device)
     }
 
-    public func render(to layer: CAMetalLayer) {
+    public func render(to layer: CAMetalLayer, timestamp: CFTimeInterval = CACurrentMediaTime()) {
         guard let scene else { return }
         guard let drawable = layer.nextDrawable() else { return }
+
+        clock.advance(to: timestamp)
+        camera.setPointer(normalized: pointer)
+        camera.update(deltaTime: clock.delta)
+        let cameraOffset = camera.offset
 
         let descriptor = MTLRenderPassDescriptor()
         descriptor.colorAttachments[0].texture = drawable.texture
@@ -80,7 +97,7 @@ public final class SceneRenderer {
             .filter(\.isVisible)
             .map { layer in
                 QuadDraw(
-                    transform: layer.modelMatrix,
+                    transform: layer.modelMatrix(cameraOffset: cameraOffset),
                     tint: layer.tint,
                     texture: layer.texture,
                     blend: layer.blend
@@ -139,8 +156,19 @@ extension SceneRenderer {
     /// This is the golden-image test harness from PLAN.md §12: it is what turns "handles most
     /// scenes" from a feeling into a number that CI can watch. It also makes scene bugs
     /// debuggable without a wallpaper running on somebody's desktop.
-    public func renderOffscreen(width: Int, height: Int) -> CGImage? {
+    /// - Parameter pointer: normalised pointer position, so parallax can be exercised without
+    ///   a live cursor. Settles the camera immediately rather than easing, since a single
+    ///   offscreen frame has no history to ease from.
+    public func renderOffscreen(
+        width: Int, height: Int, pointer: SIMD2<Float> = .zero
+    ) -> CGImage? {
         guard let scene else { return nil }
+
+        var camera = scene.cameraMotion
+        camera.delay = 0
+        camera.setPointer(normalized: pointer)
+        camera.update(deltaTime: 0)
+        let cameraOffset = camera.offset
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
@@ -173,7 +201,7 @@ extension SceneRenderer {
         )
         let draws = scene.layers.filter(\.isVisible).map { layer in
             QuadDraw(
-                transform: layer.modelMatrix,
+                transform: layer.modelMatrix(cameraOffset: cameraOffset),
                 tint: layer.tint,
                 texture: layer.texture,
                 blend: layer.blend

@@ -64,9 +64,10 @@ public final class SceneBackend: WallpaperBackend {
         self.renderer = renderer
         self.surface = surface
 
-        surface.onFrame = { [weak self] _ in
-            guard let self, !self.isPaused else { return }
-            self.renderer?.render(to: metalLayer)
+        surface.onFrame = { [weak self, weak surface] timestamp in
+            guard let self, !self.isPaused, let surface else { return }
+            self.renderer?.pointer = Self.normalizedPointer(on: surface.screen)
+            self.renderer?.render(to: metalLayer, timestamp: timestamp)
         }
 
         log.info("scene started: \(scene.layers.count) layer(s) for \(request.id, privacy: .public)")
@@ -81,6 +82,28 @@ public final class SceneBackend: WallpaperBackend {
 
     public func setPaused(_ paused: Bool) {
         isPaused = paused
+    }
+
+    /// Pointer position normalised to [-1, 1] about the screen centre.
+    ///
+    /// `NSEvent.mouseLocation` is a plain global-coordinate read — no event tap, no monitor, and
+    /// no Accessibility permission, which matters for an app whose pitch is that it asks for
+    /// almost nothing. The pointer is read per frame rather than tracked, since a wallpaper
+    /// window ignores mouse events by design and so receives none.
+    static func normalizedPointer(on screen: NSScreen) -> SIMD2<Float> {
+        let location = NSEvent.mouseLocation
+        let frame = screen.frame
+        guard frame.width > 0, frame.height > 0 else { return .zero }
+
+        // Global coordinates are relative to the primary display's origin, so subtract this
+        // screen's own origin before normalising — otherwise a secondary display gets a
+        // permanently pegged offset.
+        let x = Float((location.x - frame.minX) / frame.width) * 2 - 1
+        let y = Float((location.y - frame.minY) / frame.height) * 2 - 1
+        return SIMD2(
+            min(max(x, -1), 1),
+            min(max(y, -1), 1)
+        )
     }
 
     public var layerCount: Int { renderer?.scene?.layers.count ?? 0 }

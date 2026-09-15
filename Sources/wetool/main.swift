@@ -1,6 +1,7 @@
 import CoreGraphics
 import Foundation
 import ImageIO
+import simd
 import LibraryKit
 import MetalRenderer
 import Metal
@@ -28,8 +29,9 @@ func usage() -> Never {
       wetool tex info <file.tex>         Describe a texture
       wetool manifest <project.json>     Parse and dump a manifest
       wetool scene info <wallpaper-dir>  Describe a scene's layers
-      wetool scene render <wallpaper-dir> <out.png> [WxH]
-                                         Render one frame offscreen
+      wetool scene render <wallpaper-dir> <out.png> [WxH] [px,py]
+                                         Render one frame offscreen; px,py is a
+                                         normalised pointer in [-1,1] for parallax
     """)
     exit(2)
 }
@@ -195,9 +197,18 @@ case "scene":
                     width = w; height = h
                 }
             }
+            var pointer = SIMD2<Float>(0, 0)
+            if arguments.count >= 6 {
+                let parts = arguments[5].split(separator: ",")
+                if parts.count == 2, let x = Float(parts[0]), let y = Float(parts[1]) {
+                    pointer = SIMD2(x, y)
+                }
+            }
             let renderer = try SceneRenderer(renderDevice: renderDevice)
             renderer.setScene(scene)
-            guard let image = renderer.renderOffscreen(width: width, height: height) else {
+            guard let image = renderer.renderOffscreen(
+                width: width, height: height, pointer: pointer
+            ) else {
                 fail("offscreen render produced no image")
             }
             let outputURL = URL(fileURLWithPath: arguments[3])

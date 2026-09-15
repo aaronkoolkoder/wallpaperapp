@@ -64,6 +64,7 @@ struct SceneBuilderTests {
         let scene = RenderableScene(
             layers: [], orthoSize: SIMD2(1920, 1080),
             clearColor: SIMD4(0, 0, 0, 1),
+            cameraMotion: CameraMotion(isEnabled: false),
             report: .init(wallpaperID: "t")
         )
         let projection = scene.projectionMatrix

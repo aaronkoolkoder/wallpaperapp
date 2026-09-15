@@ -24,6 +24,15 @@ public struct RenderableLayer: @unchecked Sendable {
     public var parallaxDepth: SIMD2<Float>
     public var isVisible: Bool
 
+    /// Model matrix with a camera offset folded into the translation.
+    public func modelMatrix(cameraOffset: SIMD2<Float>) -> simd_float4x4 {
+        var matrix = modelMatrix
+        let shift = cameraOffset * parallaxDepth
+        matrix.columns.3.x += shift.x
+        matrix.columns.3.y += shift.y
+        return matrix
+    }
+
     /// Model matrix. Order is scale, then rotate, then translate — reversing rotation and
     /// translation would orbit each layer around the scene origin instead of spinning in place.
     public var modelMatrix: simd_float4x4 {
@@ -47,16 +56,41 @@ public struct RenderableScene: @unchecked Sendable {
     /// Orthographic extent in scene units. Draw coordinates are expressed in this space.
     public var orthoSize: SIMD2<Float>
     public var clearColor: SIMD4<Float>
+    /// Parallax configuration as the scene declared it.
+    public var cameraMotion: CameraMotion
     public var report: CompatibilityReport
+
+    /// Largest distance any layer can be displaced by parallax, in scene units.
+    ///
+    /// Used to zoom the projection just enough that deflection never uncovers the frame edge.
+    public var maximumParallaxShift: SIMD2<Float> {
+        guard cameraMotion.isEnabled else { return .zero }
+        let travel = abs(cameraMotion.amount * cameraMotion.mouseInfluence)
+        guard travel > 0 else { return .zero }
+
+        var worst = SIMD2<Float>.zero
+        for layer in layers where layer.isVisible {
+            worst = simd_max(worst, abs(layer.parallaxDepth) * travel)
+        }
+        return worst
+    }
 
     public var projectionMatrix: simd_float4x4 {
         // Maps the scene's ortho box onto clip space with Y up. Wallpaper Engine places the
         // origin at the centre of the scene, not a corner, so this is symmetric about zero.
-        let halfWidth = max(1, orthoSize.x) * 0.5
-        let halfHeight = max(1, orthoSize.y) * 0.5
+        //
+        // The box is widened by the worst-case parallax deflection. Wallpaper Engine leaves this
+        // to the scene author — backgrounds are normally drawn oversized — but a scene authored
+        // without that margin shows black at the edge the moment the camera moves, which reads
+        // as a rendering bug rather than as content being tight. Widening the box zooms in just
+        // enough to keep the frame covered, and costs nothing when parallax is off or depths
+        // are zero.
+        let margin = maximumParallaxShift
+        let halfWidth = max(1, orthoSize.x) * 0.5 - margin.x
+        let halfHeight = max(1, orthoSize.y) * 0.5 - margin.y
         return simd_float4x4(
-            SIMD4(1 / halfWidth, 0, 0, 0),
-            SIMD4(0, 1 / halfHeight, 0, 0),
+            SIMD4(1 / max(1, halfWidth), 0, 0, 0),
+            SIMD4(0, 1 / max(1, halfHeight), 0, 0),
             SIMD4(0, 0, 1, 0),
             SIMD4(0, 0, 0, 1)
         )
@@ -143,6 +177,7 @@ public struct SceneBuilder {
             clearColor: SIMD4(
                 Float(clear?.x ?? 0), Float(clear?.y ?? 0), Float(clear?.z ?? 0), 1
             ),
+            cameraMotion: CameraMotion(general: document.general),
             report: report
         )
     }
