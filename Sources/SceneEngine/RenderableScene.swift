@@ -244,10 +244,9 @@ public struct SceneBuilder {
                     systems.append(system)
                 }
             case .text:
-                report.add(
-                    .degraded, feature: "Text layers",
-                    detail: object.name.map { "\"\($0)\" is not drawn yet" }
-                )
+                if let layer = buildTextLayer(object, device: device, report: &report) {
+                    layers.append(layer)
+                }
             case .sound:
                 // Silent by design; not a defect worth reporting.
                 break
@@ -329,6 +328,49 @@ public struct SceneBuilder {
         // Surface whatever behaviours the emitter needed and we do not implement.
         for finding in system.findings { report.add(finding) }
         return system
+    }
+
+    private func buildTextLayer(
+        _ object: SceneObject,
+        device: any MTLDevice,
+        report: inout CompatibilityReport
+    ) -> RenderableLayer? {
+        var findings: [CompatibilityFinding] = []
+        guard let rendered = TextLayerRenderer().makeTexture(
+            for: object, device: device, findings: &findings
+        ) else {
+            report.add(
+                .degraded, feature: "Text layer",
+                detail: object.name.map { "\"\($0)\" could not be rendered" }
+            )
+            return nil
+        }
+        for finding in findings { report.add(finding) }
+
+        let origin = object.origin ?? WEVector3(0, 0, 0)
+        let angles = object.angles ?? WEVector3(0, 0, 0)
+        let scale = object.scale ?? WEVector3(1, 1, 1)
+        let parallax = object.parallaxDepth
+
+        // Size comes from the rasterised bitmap, not from the object's declared size: the text
+        // has a real aspect ratio and forcing it into a declared box would stretch the glyphs.
+        return RenderableLayer(
+            name: object.name ?? "Text",
+            origin: SIMD3(Float(origin.x), Float(origin.y), Float(origin.z)),
+            angles: SIMD3(
+                Float(angles.x) * .pi / 180,
+                Float(angles.y) * .pi / 180,
+                Float(angles.z) * .pi / 180
+            ),
+            scale: SIMD3(Float(scale.x), Float(scale.y), Float(scale.z)),
+            size: rendered.size,
+            // Colour is already baked into the glyphs, so the tint carries opacity only.
+            tint: SIMD4(1, 1, 1, Float(object.alpha ?? 1)),
+            blend: .premultipliedAlpha,
+            texture: rendered.texture,
+            parallaxDepth: SIMD2(Float(parallax?.x ?? 0), Float(parallax?.y ?? 0)),
+            isVisible: object.visible?.staticValue ?? true
+        )
     }
 
     private func buildImageLayer(

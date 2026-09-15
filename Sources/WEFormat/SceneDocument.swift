@@ -140,6 +140,16 @@ public struct SceneObject: Sendable, Hashable, Codable {
 
     /// Ordered effect chain applied to this object's rendered output.
     public var effects: [SceneEffect]
+    /// Font name for a text object, as the wallpaper names it.
+    public var font: String?
+    /// Point size in scene units.
+    public var fontSize: Double?
+    /// `left`, `center`, `right`.
+    public var horizontalAlign: String?
+    /// Outline/shadow thickness, when the text declares one.
+    public var outlineSize: Double?
+    /// Outline colour, 0-1 components.
+    public var outlineColor: WEVector3?
     /// SceneScript bodies keyed by the property they animate: `alpha`, `origin`, `angles`,
     /// `scale`, `color`. Empty for the overwhelming majority of objects.
     public var scripts: [String: String]
@@ -162,7 +172,12 @@ public struct SceneObject: Sendable, Hashable, Codable {
         sounds: [String] = [],
         material: String? = nil,
         effects: [SceneEffect] = [],
-        scripts: [String: String] = [:]
+        scripts: [String: String] = [:],
+        font: String? = nil,
+        fontSize: Double? = nil,
+        horizontalAlign: String? = nil,
+        outlineSize: Double? = nil,
+        outlineColor: WEVector3? = nil
     ) {
         self.id = id
         self.name = name
@@ -182,6 +197,11 @@ public struct SceneObject: Sendable, Hashable, Codable {
         self.material = material
         self.effects = effects
         self.scripts = scripts
+        self.font = font
+        self.fontSize = fontSize
+        self.horizontalAlign = horizontalAlign
+        self.outlineSize = outlineSize
+        self.outlineColor = outlineColor
     }
 
     public init(from decoder: Decoder) throws {
@@ -205,6 +225,12 @@ public struct SceneObject: Sendable, Hashable, Codable {
             if let body = object.script(property) { scripts[property] = body }
         }
         self.scripts = scripts
+
+        font = object.string("font")
+        fontSize = object.double("fontsize") ?? object.double("size")
+        horizontalAlign = object.string("horizontalalign") ?? object.string("align")
+        outlineSize = object.double("outlinesize")
+        outlineColor = object.value(WEVector3.self, "outlinecolor")
 
         image = object.string("image")
         particle = object.string("particle")
