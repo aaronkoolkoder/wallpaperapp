@@ -10,6 +10,7 @@ import os
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let coordinator = DisplayCoordinator()
     private let library = LibraryStore()
+    private let playlists = PlaylistStore()
     private var playback: PlaybackController?
 
     private var statusItem: NSStatusItem?
@@ -55,6 +56,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             log.warning("DIORAMA_FORCE_RENDER is set; occlusion suspension disabled")
         }
 
+        // Playlists drive playback through the same path the user's own clicks do.
+        playlists.isPlayable = { [weak self] id in
+            self?.library.item(withID: id)?.isPlayable ?? false
+        }
+        playlists.onAdvance = { [weak self] id in
+            guard let self, let item = self.library.item(withID: id) else { return }
+            self.play(item)
+        }
+        playlists.start()
+
         coordinator.start()
 
         // DIORAMA_LIBRARY=<path> imports a folder without the file panel, so the playback path
@@ -95,6 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        playlists.stop()
         playback?.stopAll()
         coordinator.stop()
     }
