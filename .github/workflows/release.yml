@@ -1,0 +1,64 @@
+name: Release
+
+# Publishes the installer when a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  dmg:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode_26.app || true
+
+      - name: Test
+        run: swift test
+
+      - name: Install DMG layout tooling
+        # Written straight into a .DS_Store rather than by scripting Finder, which needs
+        # Automation permission and would hang on a runner with nobody to approve it.
+        run: |
+          python3 -m venv .dmgvenv
+          .dmgvenv/bin/pip install --quiet ds_store mac_alias
+
+      - name: Build installer
+        run: DMG_PYTHON="$PWD/.dmgvenv/bin/python" Scripts/make-dmg.sh release
+
+      - name: Verify the image mounts and contains a valid app
+        run: |
+          MOUNT=$(hdiutil attach dist/Diorama-*.dmg -nobrowse -readonly | grep -o '/Volumes/.*' | head -1)
+          test -d "$MOUNT/Diorama.app" || { echo "app missing from image"; exit 1; }
+          test -L "$MOUNT/Applications" || { echo "Applications symlink missing"; exit 1; }
+          codesign -v "$MOUNT/Diorama.app"
+          hdiutil detach "$MOUNT" -quiet
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Diorama-dmg
+          path: dist/*.dmg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.dmg
+          generate_release_notes: true
+          body: |
+            ## Installing
+
+            Download the `.dmg`, open it, and drag **Diorama** into **Applications**.
+
+            **On first launch, right-click the app and choose Open.** This build is signed
+            ad-hoc rather than with an Apple Developer ID, so macOS will warn that the developer
+            cannot be verified. Right-click → Open lets you past it once, after which it opens
+            normally. Double-clicking the first time will only offer to move it to the Bin.
+
+            Requires macOS 26 (Tahoe) on Apple Silicon.

@@ -48,21 +48,47 @@ M5 Pro, 3024×1964 Retina, on battery. Percent of **one** core.
 Video misses its sub-1% target; the cause is understood and written up in PLAN.md §6.1 rather
 than glossed over.
 
-## Requirements
+## Install
 
-macOS 26 (Tahoe), Apple Silicon, Xcode 26 / Swift 6.3.
+Grab the `.dmg` from [Releases](https://github.com/aaronkoolkoder/wallpaperapp/releases), open
+it, and drag **Diorama** into **Applications**.
 
-## Build and run
+> **First launch: right-click the app and choose Open.**
+>
+> Builds are signed ad-hoc rather than with an Apple Developer ID, so macOS reports that the
+> developer cannot be verified. Right-click → Open gets past it once and it opens normally
+> afterwards. Double-clicking the first time only offers to move it to the Bin — that is
+> Gatekeeper, not a broken download.
+>
+> Removing the warning entirely needs a paid Apple Developer ID and notarisation.
+
+Requires macOS 26 (Tahoe) on Apple Silicon.
+
+## Using it
+
+Diorama shows a Dock icon while a window is open and drops to the menu bar when none is, so it
+stays out of the way while a wallpaper runs. The menu bar icon opens a panel with what is playing
+on each display; **Wallpaper → Wallpaper Library** (⌘L) opens the full browser.
+
+## Build from source
 
 ```bash
 swift build && swift test
 ```
 
 ```bash
-./Scripts/bundle.sh debug && open dist/Diorama.app
+./Scripts/bundle.sh release && open dist/Diorama.app
 ```
 
-Diorama is a menu bar app — look for the icon in the menu bar, not the Dock.
+Build the installer:
+
+```bash
+python3 -m venv .dmgvenv && .dmgvenv/bin/pip install ds_store mac_alias
+DMG_PYTHON="$PWD/.dmgvenv/bin/python" Scripts/make-dmg.sh release
+```
+
+The DMG window layout is written straight into a `.DS_Store`. Every other recipe scripts Finder
+over AppleScript, which needs Automation permission — a prompt locally and a hang in CI.
 
 ### Getting your wallpapers across
 

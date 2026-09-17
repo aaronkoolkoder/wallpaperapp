@@ -27,3 +27,8 @@ web/.next/
 web/out/
 web/next-env.d.ts
 web/tsconfig.tsbuildinfo
+
+# Distribution artefacts
+dist/
+Resources/Diorama.iconset/
+.dmgvenv/
