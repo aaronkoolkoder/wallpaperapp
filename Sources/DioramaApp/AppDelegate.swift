@@ -36,6 +36,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         self.model = model
 
+        // Without this there is no Quit item, Cmd+Q does nothing, and Cmd+C/V are dead in
+        // every text field including the library search.
+        NSApp.mainMenu = MainMenu.build(target: self)
+
         setUpStatusItem()
 
         // Relay power decisions to whatever backend is playing. The backends never see the
@@ -100,9 +104,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // No library yet means nothing can play, so send the user somewhere useful rather than
-        // leaving a menu bar icon that appears to do nothing.
-        if library.rootURL == nil { showLibrary(nil) }
+        // Always open the library on launch. A menu bar icon is easy to miss, and an app that
+        // starts and visibly does nothing reads as broken — the first thing it does should be
+        // to show you the thing it is for.
+        if ProcessInfo.processInfo.environment["DIORAMA_PLAY"] == nil {
+            showLibrary(nil)
+        }
+    }
+
+    /// Clicking the Dock icon with no window open should bring the library back, not do nothing.
+    func applicationShouldHandleReopen(
+        _ sender: NSApplication, hasVisibleWindows: Bool
+    ) -> Bool {
+        if !hasVisibleWindows { showLibrary(nil) }
+        return true
+    }
+
+    /// Closing the last window must not quit: the wallpaper keeps running.
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
+    }
+
+    /// Show a Dock icon while a window is open, and drop back to menu-bar-only when none is.
+    ///
+    /// A permanent Dock icon is clutter for something that mostly sits in the background, but
+    /// `.accessory` alone means a missed menu bar item leaves no way into the app at all — and
+    /// an accessory app's windows cannot properly own the menu bar, so Cmd+Q and Cmd+W behave
+    /// oddly even once the menu exists.
+    func updateActivationPolicy() {
+        let hasWindow = NSApp.windows.contains {
+            $0.isVisible && $0.canBecomeMain && !($0 is NSPanel)
+        }
+        let wanted: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory
+        guard NSApp.activationPolicy() != wanted else { return }
+        log.info("activation policy -> \(wanted == .regular ? "regular (dock)" : "accessory")")
+        NSApp.setActivationPolicy(wanted)
+        if wanted == .regular { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -179,9 +216,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Windows
 
-    @objc private func showLibrary(_ sender: Any?) {
+    // MARK: - Menu actions
+
+    @objc func togglePauseFromMenu(_ sender: Any?) {
+        model?.togglePause()
+    }
+
+    @objc func advancePlaylist(_ sender: Any?) {
+        playlists.advanceNow()
+    }
+
+    @objc func clearAllWallpapers(_ sender: Any?) {
+        playback?.stopAll()
+        model?.refresh()
+    }
+
+    @objc func showLibrary(_ sender: Any?) {
         if let existing = libraryWindow {
             existing.makeKeyAndOrderFront(nil)
+            updateActivationPolicy()
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -204,7 +257,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrameAutosaveName("LibraryWindow")
 
         libraryWindow = window
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
+        // After ordering front, not before: the window is not yet visible when it is created,
+        // so counting visible windows first always concludes there are none.
+        updateActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
     }
 
@@ -279,9 +336,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func showSettings(_ sender: Any?) {
+    @objc func showSettings(_ sender: Any?) {
         if let existing = settingsWindow {
             existing.makeKeyAndOrderFront(nil)
+            updateActivationPolicy()
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -300,7 +358,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrameAutosaveName("SettingsWindow")
 
         settingsWindow = window
+        window.delegate = self
         window.makeKeyAndOrderFront(nil)
+        // After ordering front, not before: the window is not yet visible when it is created,
+        // so counting visible windows first always concludes there are none.
+        updateActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
+    }
+}
+
+extension AppDelegate: NSWindowDelegate {
+    /// Drop the Dock icon once the last window goes away, on the next turn of the run loop so
+    /// the window has actually been removed from `NSApp.windows` by the time we count them.
+    func windowWillClose(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            self?.updateActivationPolicy()
+        }
     }
 }
