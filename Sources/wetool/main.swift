@@ -28,6 +28,10 @@ func usage() -> Never {
       wetool pkg extract <scene.pkg> <out-dir>
       wetool tex info <file.tex>         Describe a texture
       wetool manifest <project.json>     Parse and dump a manifest
+      wetool report <library-dir> [--json <out.json>]
+                                         Audit a whole library: what renders,
+                                         what does not, and which missing
+                                         features affect the most wallpapers
       wetool scene info <wallpaper-dir>  Describe a scene's layers
       wetool scene render <wallpaper-dir> <out.png> [WxH] [px,py]
                                          Render one frame offscreen; px,py is a
@@ -154,6 +158,117 @@ case "manifest":
         print("properties: \(properties.count)")
         for (key, property) in properties.sorted(by: { $0.key < $1.key }) {
             print("  \(key): \(property.type.rawValue)\(property.text.map { " — \($0)" } ?? "")")
+        }
+    } catch { fail("\(error)") }
+
+case "report":
+    guard arguments.count >= 2 else { usage() }
+    let libraryRoot = URL(fileURLWithPath: arguments[1])
+    var jsonOutput: URL?
+    if let flagIndex = arguments.firstIndex(of: "--json"), flagIndex + 1 < arguments.count {
+        jsonOutput = URL(fileURLWithPath: arguments[flagIndex + 1])
+    }
+
+    do {
+        let renderDevice = try RenderDevice.system()
+        let scan = LibraryScanner().scan(root: libraryRoot)
+        let audit = CompatibilityAudit()
+
+        print("scanned \(scan.scannedDirectories) director\(scan.scannedDirectories == 1 ? "y" : "ies") in \(String(format: "%.2f", scan.duration))s")
+        print("indexed \(scan.items.count), playable \(scan.playableCount)\n")
+
+        var entries: [AuditEntry] = []
+        var nonScene: [String: Int] = [:]
+
+        for item in scan.items {
+            guard item.isPlayable else { continue }
+            // Only scenes have anything to audit; video and web either play or they do not,
+            // and neither has a compatibility surface worth enumerating.
+            guard item.type == .scene, let contentURL = item.contentURL else {
+                nonScene[item.type.rawValue, default: 0] += 1
+                continue
+            }
+            entries.append(
+                audit.audit(
+                    id: item.id, title: item.title, type: item.type.rawValue,
+                    directory: item.directory, packageURL: contentURL,
+                    device: renderDevice.device
+                )
+            )
+        }
+
+        let summary = audit.summarize(entries)
+
+        print("SCENES")
+        print("  audited          \(summary.total)")
+        print("  renders cleanly  \(summary.supported)  (\(Int(summary.supportedShare * 100))%)")
+        print("  partly supported \(summary.degraded)")
+        print("  unsupported      \(summary.unsupported)")
+        print("  failed to open   \(summary.failed)")
+        if summary.total > 0 {
+            print("  mean load        \(String(format: "%.0fms", summary.totalSeconds / Double(summary.total) * 1000))")
+        }
+        for (type, count) in nonScene.sorted(by: { $0.key < $1.key }) {
+            print("  \(type): \(count) (not audited)")
+        }
+
+        if !summary.featureImpact.isEmpty {
+            print("\nWHAT TO BUILD NEXT — by wallpapers affected")
+            for (feature, count) in summary.featureImpact.prefix(12) {
+                let share = Int(Double(count) / Double(max(1, summary.total)) * 100)
+                let bar = String(repeating: "█", count: max(1, share / 4))
+                print(String(format: "  %-24s %4d  %3d%%  %@", (feature as NSString).utf8String!, count, share, bar))
+            }
+        }
+
+        if !summary.detailImpact.isEmpty {
+            print("\nSPECIFICS")
+            for (detail, count) in summary.detailImpact.prefix(15) {
+                print("  \(count)x  \(detail)")
+            }
+        }
+
+        let broken = entries.filter { $0.failure != nil || $0.layerCount == 0 }
+        if !broken.isEmpty {
+            print("\nDID NOT RENDER (\(broken.count))")
+            for entry in broken.prefix(20) {
+                print("  \(entry.id)  \(entry.title) — \(entry.failure ?? "no drawable layers")")
+            }
+        }
+
+        if let jsonOutput {
+            // Machine-readable so runs can be diffed as the renderer improves; a percentage
+            // that only exists in terminal scrollback cannot show progress over time.
+            var payload: [[String: Any]] = []
+            for entry in entries {
+                payload.append([
+                    "id": entry.id,
+                    "title": entry.title,
+                    "level": entry.level.label,
+                    "layers": entry.layerCount,
+                    "particleEmitters": entry.particleEmitters,
+                    "scripts": entry.scriptCount,
+                    "loadMilliseconds": Int(entry.loadSeconds * 1000),
+                    "failure": entry.failure as Any,
+                    "findings": entry.findings.map {
+                        ["level": $0.level.label, "feature": $0.feature, "detail": $0.detail as Any]
+                    },
+                ])
+            }
+            let root: [String: Any] = [
+                "total": summary.total,
+                "supported": summary.supported,
+                "degraded": summary.degraded,
+                "unsupported": summary.unsupported,
+                "failed": summary.failed,
+                "featureImpact": summary.featureImpact.map { ["feature": $0.feature, "wallpapers": $0.wallpapers] },
+                "wallpapers": payload,
+            ]
+            let data = try JSONSerialization.data(
+                withJSONObject: root, options: [.prettyPrinted, .sortedKeys]
+            )
+            try data.write(to: jsonOutput)
+            print("\nwrote \(jsonOutput.path)")
         }
     } catch { fail("\(error)") }
 

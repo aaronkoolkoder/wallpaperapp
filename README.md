@@ -89,6 +89,7 @@ A CLI for inspecting content without launching the app.
 
 ```bash
 swift run wetool scan ~/Wallpapers          # index a library and summarise it
+swift run wetool report ~/Wallpapers        # audit every scene; rank what is missing
 swift run wetool pkg list scene.pkg         # list package entries
 swift run wetool pkg extract scene.pkg out/ # unpack
 swift run wetool tex info texture.tex       # describe a texture
@@ -96,6 +97,11 @@ swift run wetool manifest project.json      # parse a manifest
 swift run wetool scene info <dir>          # describe a scene's layers
 swift run wetool scene render <dir> out.png 1920x1080
 ```
+
+`report` is the one to run against a real Workshop library. It loads every scene, collects what
+could not be rendered, and ranks missing features by **how many wallpapers each affects** — so the
+backlog is ordered by what actually bites rather than by guesswork. `--json` writes a
+machine-readable copy so successive runs can be diffed as the renderer improves.
 
 `scene render` draws a frame with no window and no display — the golden-image harness, and the
 fastest way to debug a scene without one running on your desktop.
