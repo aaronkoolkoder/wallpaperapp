@@ -498,6 +498,22 @@ public struct SceneBuilder {
         return layer
     }
 
+    /// Which sampler a material's texture slot feeds.
+    ///
+    /// The name `g_TextureN` wins when the shader declares it, because that is the convention
+    /// the material's array is written against. Declaration order is the fallback for shaders
+    /// that name their samplers something else entirely, and it only considers samplers that are
+    /// not themselves `g_Texture*` — otherwise a shader declaring `g_Texture1` but not
+    /// `g_Texture0` would have slot 0 fall through onto `g_Texture1`.
+    static func samplerName(forTextureSlot slot: Int, declared: [String]) -> String {
+        let conventional = "g_Texture\(slot)"
+        if declared.contains(conventional) { return conventional }
+
+        let unconventional = declared.filter { !$0.hasPrefix("g_Texture") }
+        if slot < unconventional.count { return unconventional[slot] }
+        return conventional
+    }
+
     /// A shader finding as one line, without repeating what the report already shows.
     ///
     /// `ShaderDiagnostic.description` leads with the severity and trails with the kind, both of
@@ -559,13 +575,17 @@ public struct SceneBuilder {
             )
         }
 
-        // A material's `textures` array is positional: entry n feeds the shader's nth declared
-        // sampler, which by Wallpaper Engine's convention is `g_TextureN`.
+        // A material's `textures` array is positional, and Wallpaper Engine's convention is that
+        // entry n is the sampler *named* `g_TextureN` — not the nth sampler the shader happens
+        // to declare. The two differ whenever a shader declares another sampler first, which is
+        // routine: a `#if`-guarded mask declared above `g_Texture0` would otherwise take slot 0
+        // and the colour map would be bound to a sampler the shader does not read, leaving the
+        // layer flat white.
         var textures: [String: any MTLTexture] = [:]
         for (index, path) in pass.textures.enumerated() {
-            let samplerName = index < program.declaredSamplers.count
-                ? program.declaredSamplers[index]
-                : "g_Texture\(index)"
+            let samplerName = Self.samplerName(
+                forTextureSlot: index, declared: program.declaredSamplers
+            )
             if index == 0, let primaryTexture {
                 textures[samplerName] = primaryTexture
                 continue
