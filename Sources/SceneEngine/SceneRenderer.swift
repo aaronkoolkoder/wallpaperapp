@@ -28,6 +28,7 @@ public final class SceneRenderer {
     private let renderDevice: RenderDevice
     private let quads: QuadRenderer
     private let materials: MaterialRenderer
+    private let effectRunner: EffectChainRunner
     private let post: PostProcessor
     private let pool: FBOPool
     private let log = Logger(subsystem: "app.diorama", category: "scene-render")
@@ -69,7 +70,9 @@ public final class SceneRenderer {
     public init(renderDevice: RenderDevice) throws {
         self.renderDevice = renderDevice
         self.quads = try QuadRenderer(device: renderDevice.device)
-        self.materials = try MaterialRenderer(device: renderDevice.device)
+        let materialRenderer = try MaterialRenderer(device: renderDevice.device)
+        self.materials = materialRenderer
+        self.effectRunner = EffectChainRunner(materials: materialRenderer)
         self.post = try PostProcessor(device: renderDevice.device)
         self.pool = FBOPool(device: renderDevice.device)
     }
@@ -214,6 +217,81 @@ public final class SceneRenderer {
             if !unsupplied.isEmpty { unsuppliedEngineUniforms.formUnion(unsupplied) }
         }
         flush()
+    }
+
+    /// Runs a chain of effects in order, whichever kind each step is.
+    ///
+    /// Consecutive approximated steps go through `PostProcessor` in one call, which already
+    /// ping-pongs internally; each compiled effect runs its own passes. Grouping preserves the
+    /// author's order — running all of one kind and then the other would change the result of
+    /// any chain that mixes them.
+    private func applyEffectChain(
+        _ chain: [LayerEffect],
+        source: any MTLTexture,
+        destination: any MTLTexture,
+        buffer: any MTLCommandBuffer
+    ) {
+        guard !chain.isEmpty else {
+            post.apply([], source: source, destination: destination, commandBuffer: buffer, pool: pool)
+            return
+        }
+
+        // Group into runs so a sequence of approximated steps stays one call.
+        var groups: [[LayerEffect]] = []
+        for step in chain {
+            if case .builtIn = step, case .builtIn = groups.last?.last {
+                groups[groups.count - 1].append(step)
+            } else {
+                groups.append([step])
+            }
+        }
+
+        var current: any MTLTexture = source
+        var scratch: PooledTexture?
+        defer { if let scratch { pool.release(scratch) } }
+
+        for (index, group) in groups.enumerated() {
+            let isLast = index == groups.count - 1
+            let target: any MTLTexture
+            if isLast {
+                target = destination
+            } else {
+                guard let pooled = pool.acquire(
+                    width: destination.width, height: destination.height,
+                    pixelFormat: destination.pixelFormat
+                ) else {
+                    // Out of memory mid-chain: emit what we have rather than a black frame,
+                    // matching what PostProcessor does in the same situation.
+                    post.apply(
+                        [], source: current, destination: destination,
+                        commandBuffer: buffer, pool: pool
+                    )
+                    return
+                }
+                if let previous = scratch { pool.release(previous) }
+                scratch = pooled
+                target = pooled.texture
+            }
+
+            if case .compiled(let effect) = group[0], group.count == 1 {
+                let ran = effectRunner.run(
+                    effect, source: current, destination: target,
+                    engine: engineUniforms(), commandBuffer: buffer, pool: pool
+                )
+                if !ran {
+                    post.apply(
+                        [], source: current, destination: target,
+                        commandBuffer: buffer, pool: pool
+                    )
+                }
+            } else {
+                post.apply(
+                    group.builtInOnly, source: current, destination: target,
+                    commandBuffer: buffer, pool: pool
+                )
+            }
+            current = target
+        }
     }
 
     /// The values the app supplies to every shader this frame.
@@ -385,12 +463,11 @@ public final class SceneRenderer {
                 encoder.endEncoding()
             }
 
-            post.apply(
+            applyEffectChain(
                 sceneLayer.effects,
                 source: isolated.texture,
                 destination: processed.texture,
-                commandBuffer: buffer,
-                pool: pool
+                buffer: buffer
             )
 
             // Composite the processed layer back, full-frame.
@@ -425,12 +502,11 @@ public final class SceneRenderer {
         )
 
         // Scene-wide chain straight into the drawable.
-        post.apply(
+        applyEffectChain(
             scene.sceneEffects,
             source: accumulator.texture,
             destination: drawable.texture,
-            commandBuffer: buffer,
-            pool: pool
+            buffer: buffer
         )
     }
 
@@ -591,12 +667,11 @@ extension SceneRenderer {
             // and reproducing exact per-layer isolation would mean duplicating the whole live
             // composition path for no extra diagnostic value.
             let combined = scene.layers.flatMap(\.effects) + scene.sceneEffects
-            post.apply(
+            applyEffectChain(
                 combined,
                 source: compositionTarget,
                 destination: target,
-                commandBuffer: buffer,
-                pool: pool
+                buffer: buffer
             )
         }
 

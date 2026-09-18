@@ -344,6 +344,19 @@ percent of **one** core, as `ps` reports them.
 | Scene, 8 layers running their own shaders | 1–2% | **+0.09 points** ✅ | Cost *added* by transpiled shaders over the built-in one. |
 | Scene, 32 layers running their own shaders | 1–2% | **+0.19 points** ✅ | Sub-linear: the per-draw cost falls as fixed work amortises. |
 
+**Effects run the author's own passes.** An effect is a small render graph: a list of passes,
+each naming a material, writing a named target and binding earlier targets as inputs. Those
+compile through the same path a layer's material does, and run against the FBO pool. The
+name-matched approximations remain as the fallback for an effect that will not compile, and a
+wallpaper's compatibility report now distinguishes "approximated" from "run as written" — the
+difference the whole transpilation effort was for.
+
+One thing here is inferred rather than confirmed: a `_rt_` binding naming a target no earlier
+pass has written is treated as the chain's input, which is what makes a single-pass effect read
+the layer it sits on. Wallpaper Engine supplies several such names itself, and which of them mean
+something other than "the frame so far" needs checking against real Workshop content. It is
+marked `TODO(verify)` in the source.
+
 **Running a wallpaper's own shaders is close to free on the CPU.** Measured with
 `wetool scene bench <dir> --size 256x256`, which keeps the offscreen readback small enough that
 what is left is the per-frame encode. Eight layers cost 0.082 ms of thread CPU per frame with

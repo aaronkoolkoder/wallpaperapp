@@ -109,10 +109,11 @@ public struct EffectDocument: Sendable, Hashable, Codable {
 
     /// Best-effort classification of what this effect actually does.
     ///
-    /// Running an arbitrary Wallpaper Engine effect needs its shaders transpiled to MSL, which
-    /// is not wired up yet. Until it is, effects are matched by name against built-in
-    /// implementations — which covers the handful that appear in most wallpapers — and anything
-    /// unmatched is reported rather than silently skipped.
+    /// This is the *fallback* path. An effect whose shaders compile runs its own passes; this
+    /// is what happens when they do not — the shader toolchain is not vendored in this build,
+    /// a pass names a material that is missing, or a shader will not compile. Matching by name
+    /// covers the handful of effects that appear in most wallpapers, and anything unmatched is
+    /// reported rather than silently skipped.
     public var classifiedKind: String {
         let haystack = [name, description, passes.first?.material]
             .compactMap { $0 }

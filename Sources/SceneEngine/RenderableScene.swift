@@ -23,7 +23,7 @@ public struct RenderableLayer: @unchecked Sendable {
     /// Parallax response.
     public var parallaxDepth: SIMD2<Float>
     /// Post-process chain applied to this layer alone, before it is composited.
-    public var effects: [PostEffect] = []
+    public var effects: [LayerEffect] = []
     public var isVisible: Bool
 
     /// The material's own compiled shader, when it could be built.
@@ -76,7 +76,7 @@ public struct RenderableScene: @unchecked Sendable {
     /// Live particle emitters, simulated each frame.
     public var particles: [ParticleSystem] = []
     /// Post-process chain applied to the fully composited frame.
-    public var sceneEffects: [PostEffect] = []
+    public var sceneEffects: [LayerEffect] = []
     /// Compiled SceneScript bindings, evaluated once per frame.
     public var scriptBindings: [ScriptBinding] = []
     /// Owns the JavaScript context. Nil when no object in the scene is scripted, which is the
@@ -155,10 +155,10 @@ public struct SceneBuilder {
 
     /// Map an effect definition onto a built-in implementation.
     ///
-    /// Running a Wallpaper Engine effect faithfully means transpiling its GLSL to MSL, which is
-    /// built but not yet wired to a native backend. Matching by name covers the effects that
-    /// actually appear in most wallpapers, and anything unmatched is reported by name so the
-    /// user learns what is missing instead of wondering why a scene looks flat.
+    /// Only reached when the effect's own shaders could not be compiled — see `resolveEffects`,
+    /// which tries the author's passes first. Matching by name covers the effects that actually
+    /// appear in most wallpapers, and anything unmatched is reported by name so the user learns
+    /// what is missing instead of wondering why a scene looks flat.
     static func postEffect(for document: EffectDocument) -> PostEffect? {
         switch document.classifiedKind {
         case "bloom": .bloom(threshold: 0.6, intensity: 0.8)
@@ -174,10 +174,12 @@ public struct SceneBuilder {
     private func resolveEffects(
         _ effects: [SceneEffect],
         assets: SceneAssets,
+        device: any MTLDevice,
+        materials: MaterialCompiler?,
         owner: String,
         report: inout CompatibilityReport
-    ) -> [PostEffect] {
-        var resolved: [PostEffect] = []
+    ) -> [LayerEffect] {
+        var resolved: [LayerEffect] = []
         for effect in effects {
             if let visible = effect.visible?.staticValue, !visible { continue }
             guard let path = effect.file else { continue }
@@ -187,8 +189,23 @@ public struct SceneBuilder {
                 report.add(.degraded, feature: "Effect", detail: "\(path) could not be read")
                 continue
             }
+
+            // The author's own passes first. Matching by name is the fallback it used to be,
+            // not the plan: it covers six common effects and flattens the rest.
+            if let materials,
+               let compiled = materials.effect(
+                   for: document, assets: assets, device: device, report: &report
+               ) {
+                resolved.append(.compiled(compiled))
+                continue
+            }
+
             if let post = Self.postEffect(for: document) {
-                resolved.append(post)
+                resolved.append(.builtIn(post))
+                report.add(
+                    .degraded, feature: "Effect",
+                    detail: "\(document.name ?? path) is approximated rather than run as written"
+                )
             } else {
                 report.add(
                     .degraded, feature: "Effect",
@@ -230,7 +247,7 @@ public struct SceneBuilder {
                     object, assets: assets, device: device, materials: materials, report: &report
                 ) {
                     layer.effects = resolveEffects(
-                        object.effects, assets: assets,
+                        object.effects, assets: assets, device: device, materials: materials,
                         owner: layer.name, report: &report
                     )
                     let layerIndex = layers.count
@@ -279,12 +296,16 @@ public struct SceneBuilder {
 
         // Scene-wide bloom is declared on `general` rather than as an effect file, and is by
         // far the most common post-process in Workshop content.
-        var sceneEffects: [PostEffect] = []
+        var sceneEffects: [LayerEffect] = []
         if document.general?.bloom == true {
+            // Declared on `general` rather than as an effect file, so there is no author
+            // shader to compile — the built-in one is the faithful answer here, not a fallback.
             sceneEffects.append(
-                .bloom(
-                    threshold: Float(document.general?.bloomThreshold ?? 0.6),
-                    intensity: Float(document.general?.bloomStrength ?? 0.8)
+                .builtIn(
+                    .bloom(
+                        threshold: Float(document.general?.bloomThreshold ?? 0.6),
+                        intensity: Float(document.general?.bloomStrength ?? 0.8)
+                    )
                 )
             )
         }
