@@ -211,3 +211,78 @@ struct ScriptPropertyTests {
         #expect(l.tint == original)
     }
 }
+
+@Suite("Script audio bridge")
+struct ScriptAudioTests {
+
+    @Test("Scripts can read the audio level")
+    func readsLevel() throws {
+        let runtime = try #require(ScriptRuntime())
+        var frame = AudioFrame.silent
+        frame.amplitude = 0.75
+        runtime.setAudio(frame)
+
+        let handle = try #require(runtime.compile(
+            "export function update(v) { return audioLevel; }", name: "t"
+        ))
+        let result = runtime.evaluate(
+            handle: handle, current: .number(0), deltaTime: 0, elapsed: 0
+        )
+        if case .number(let value) = result {
+            #expect(abs(value - 0.75) < 0.001)
+        } else {
+            Issue.record("expected a number")
+        }
+    }
+
+    @Test("Scripts can read individual bands")
+    func readsBands() throws {
+        let runtime = try #require(ScriptRuntime())
+        var frame = AudioFrame.silent
+        frame.left[3] = 0.5
+        runtime.setAudio(frame)
+
+        let handle = try #require(runtime.compile(
+            "export function update(v) { return audioLeft[3]; }", name: "t"
+        ))
+        if case .number(let value) = runtime.evaluate(
+            handle: handle, current: .number(0), deltaTime: 0, elapsed: 0
+        ) {
+            #expect(abs(value - 0.5) < 0.001)
+        } else {
+            Issue.record("expected a number")
+        }
+    }
+
+    @Test("Audio is exposed as plain data, not a bridged host object")
+    func audioIsPlainData() throws {
+        // The runtime's security position is that scripts see data and nothing else; a bridged
+        // object would be the first crack in it.
+        let runtime = try #require(ScriptRuntime())
+        runtime.setAudio(.silent)
+        let handle = try #require(runtime.compile("""
+        export function update(v) {
+            if (typeof audioLeft.stop === 'function') { return 1; }
+            if (typeof audioLeft.start === 'function') { return 2; }
+            return Array.isArray(audioLeft) ? 0 : 3;
+        }
+        """, name: "probe"))
+        #expect(
+            runtime.evaluate(handle: handle, current: .number(0), deltaTime: 0, elapsed: 0)
+                == .number(0)
+        )
+    }
+
+    @Test("A scene with no audio enabled sees silence rather than undefined")
+    func silentByDefault() throws {
+        let runtime = try #require(ScriptRuntime())
+        runtime.setAudio(.silent)
+        let handle = try #require(runtime.compile(
+            "export function update(v) { return audioLevel; }", name: "t"
+        ))
+        #expect(
+            runtime.evaluate(handle: handle, current: .number(0), deltaTime: 0, elapsed: 0)
+                == .number(0)
+        )
+    }
+}

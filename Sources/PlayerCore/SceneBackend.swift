@@ -23,6 +23,9 @@ public final class SceneBackend: WallpaperBackend {
     private var renderer: SceneRenderer?
     private weak var surface: DesktopSurface?
     private var isPaused = false
+
+    /// Supplied by the app when audio reactivity is on; nil leaves scenes silent-driven.
+    public var audioSource: (() -> AudioFrame)?
     private let log = Logger(subsystem: "app.diorama", category: "scene")
 
     public init() {
@@ -67,6 +70,9 @@ public final class SceneBackend: WallpaperBackend {
         surface.onFrame = { [weak self, weak surface] timestamp in
             guard let self, !self.isPaused, let surface else { return }
             self.renderer?.pointer = Self.normalizedPointer(on: surface.screen)
+            if let audioSource = self.audioSource {
+                self.renderer?.audio = audioSource()
+            }
             self.renderer?.render(to: metalLayer, timestamp: timestamp)
         }
 

@@ -82,6 +82,17 @@ public final class ScriptRuntime {
         """)
     }
 
+    /// Publish the latest audio frame for scripts to read.
+    ///
+    /// Exposed as plain arrays and a number on a global, not as a bridged object. The runtime's
+    /// whole security position (PLAN.md §5.5) is that scripts see data and nothing else, and a
+    /// bridged host object would be the first crack in that.
+    public func setAudio(_ frame: AudioFrame) {
+        context.setObject(frame.left, forKeyedSubscript: "audioLeft" as NSString)
+        context.setObject(frame.right, forKeyedSubscript: "audioRight" as NSString)
+        context.setObject(frame.amplitude, forKeyedSubscript: "audioLevel" as NSString)
+    }
+
     /// Compile one script into a callable update function.
     ///
     /// - Returns: an opaque handle name, or nil if the script has no usable `update`.

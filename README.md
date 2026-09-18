@@ -25,10 +25,10 @@ binary format specs, milestones, and licensing constraints.
 | M5 — parallax + particles | ✅ Done |
 | M5b — effect chains (bloom, blur, vignette…) | ✅ Done |
 | M6 — SceneScript, text layers | ✅ Done |
-| M7 — text layers, properties UI, audio | ⬜ Next |
+| M7 — playlists, per-display, audio reactivity | ✅ Done |
+| M8 — signing, notarization, release | ⬜ Next |
 | M6 — SceneScript | ⬜ |
 | M7 — properties, audio, playlists | ⬜ |
-| M8 — signing, notarization, release | ⬜ |
 
 ## Measured performance
 

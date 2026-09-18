@@ -143,6 +143,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        model?.audioCapture.stop()
         playlists.stop()
         playback?.stopAll()
         coordinator.stop()

@@ -3,6 +3,7 @@ import Diagnostics
 import LibraryKit
 import Observation
 import PlayerCore
+import SceneEngine
 import WallpaperKit
 
 /// A display as the UI needs to see it.
@@ -61,6 +62,23 @@ final class WallpaperSystemModel {
 
     let library: LibraryStore
 
+    /// Audio reactivity is off until asked for. Turning it on is what triggers the Screen
+    /// Recording prompt, so it must never happen as a side effect of anything else.
+    var audioReactivityEnabled: Bool {
+        didSet {
+            guard audioReactivityEnabled != oldValue else { return }
+            UserDefaults.standard.set(audioReactivityEnabled, forKey: "audioReactivity")
+            if audioReactivityEnabled {
+                Task { await audioCapture.start() }
+            } else {
+                audioCapture.stop()
+            }
+        }
+    }
+
+    private(set) var audioStatus: SystemAudioCapture.Status = .idle
+    let audioCapture = SystemAudioCapture()
+
     private let coordinator: DisplayCoordinator
     private let playback: PlaybackController
     private var reports: [CGDirectDisplayID: CompatibilityReport] = [:]
@@ -70,6 +88,14 @@ final class WallpaperSystemModel {
         self.playback = playback
         self.library = library
         self.preferences = coordinator.policy.preferences
+        self.audioReactivityEnabled = UserDefaults.standard.bool(forKey: "audioReactivity")
+
+        audioCapture.onStatusChange = { [weak self] status in
+            self?.audioStatus = status
+        }
+        if audioReactivityEnabled {
+            Task { [audioCapture] in await audioCapture.start() }
+        }
 
         playback.onReport = { [weak self] displayID, report in
             self?.reports[displayID] = report

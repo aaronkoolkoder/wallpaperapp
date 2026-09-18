@@ -31,6 +31,9 @@ public final class SceneRenderer {
     /// frame; the renderer itself never touches AppKit.
     public var pointer: SIMD2<Float> = .zero
 
+    /// Latest analysed system audio. Silent unless the user has enabled audio reactivity.
+    public var audio: AudioFrame = .silent
+
     /// Reused across frames. Particle emitters can produce thousands of draws, and rebuilding
     /// this array every frame would allocate on the render path — exactly what PLAN.md §6.2
     /// forbids.
@@ -145,6 +148,7 @@ public final class SceneRenderer {
     /// `return value + speed * deltaTime` actually animate.
     private func runScripts(scene: RenderableScene) {
         guard let runtime = scene.scriptRuntime, !scene.scriptBindings.isEmpty else { return }
+        runtime.setAudio(audio)
 
         for binding in scene.scriptBindings {
             guard binding.layerIndex < workingLayers.count else { continue }

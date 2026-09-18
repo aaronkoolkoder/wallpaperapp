@@ -159,6 +159,29 @@ struct PerformanceSettings: View {
             }
 
             Section {
+                Toggle("React to system audio", isOn: $model.audioReactivityEnabled)
+                if let message = model.audioStatus.message {
+                    Label(message, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(Design.Status.warning)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else if model.audioStatus.isRunning {
+                    Label("Listening", systemImage: "waveform")
+                        .font(.caption)
+                        .foregroundStyle(Design.Status.playing)
+                }
+            } header: {
+                Text("Audio")
+            } footer: {
+                // Being explicit about the cost: the prompt is the whole price of this feature
+                // to someone who does not want it.
+                Text("Wallpapers that respond to sound need Screen Recording permission, which "
+                     + "is how macOS exposes system audio. Nothing is recorded or saved — only "
+                     + "the loudness of each frequency band is read, and only while this is on.")
+                    .font(.caption)
+            }
+
+            Section {
                 Picker("Render quality", selection: $model.preferences.resolutionScale) {
                     Text("Battery saver (50%)").tag(0.5)
                     Text("Balanced (75%)").tag(0.75)
