@@ -84,6 +84,23 @@ public struct RenderableScene: @unchecked Sendable {
     public var scriptRuntime: ScriptRuntime?
     public var report: CompatibilityReport
 
+    /// Layers drawing through their material's own compiled shader.
+    ///
+    /// Reported alongside the layer count because "renders cleanly" does not distinguish a
+    /// wallpaper running the author's shaders from one approximating them, and that is the
+    /// distinction the transpilation work exists to move.
+    public var layersWithOwnShaders: Int { layers.filter { $0.program != nil }.count }
+
+    /// Effects running the author's own passes, across the scene and every layer.
+    public var compiledEffectCount: Int {
+        (sceneEffects + layers.flatMap(\.effects)).filter(\.isCompiled).count
+    }
+
+    /// Effects standing in as a built-in approximation of the author's.
+    public var approximatedEffectCount: Int {
+        (sceneEffects + layers.flatMap(\.effects)).filter { !$0.isCompiled }.count
+    }
+
     /// Largest distance any layer can be displaced by parallax, in scene units.
     ///
     /// Used to zoom the projection just enough that deflection never uncovers the frame edge.
@@ -503,7 +520,7 @@ public struct SceneBuilder {
         } catch {
             report.add(
                 .degraded, feature: "Shader",
-                detail: "\(shader): \(error.localizedDescription) — drawn without it"
+                detail: "\(shader): \(ShaderMessageText.oneLine(error.localizedDescription)) — drawn without it"
             )
             return nil
         }
@@ -511,7 +528,7 @@ public struct SceneBuilder {
         for diagnostic in program.diagnostics where diagnostic.severity != .info {
             report.add(
                 diagnostic.severity == .unsupported ? .unsupported : .degraded,
-                feature: "Shader", detail: "\(shader): \(diagnostic.message)"
+                feature: "Shader", detail: "\(shader): \(ShaderMessageText.oneLine(diagnostic.message))"
             )
         }
 

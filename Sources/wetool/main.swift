@@ -187,6 +187,10 @@ case "report":
         let renderDevice = try RenderDevice.system()
         let scan = LibraryScanner().scan(root: libraryRoot)
         let audit = CompatibilityAudit()
+        // One compiler for the whole library. Workshop wallpapers are overwhelmingly built from
+        // the same stock shaders, so translating each distinct one once rather than once per
+        // wallpaper is the difference between a report that takes seconds and one that does not.
+        let sharedCompiler = MaterialCompiler(device: renderDevice.device)
 
         print("scanned \(scan.scannedDirectories) director\(scan.scannedDirectories == 1 ? "y" : "ies") in \(String(format: "%.2f", scan.duration))s")
         print("indexed \(scan.items.count), playable \(scan.playableCount)\n")
@@ -206,7 +210,7 @@ case "report":
                 audit.audit(
                     id: item.id, title: item.title, type: item.type.rawValue,
                     directory: item.directory, packageURL: contentURL,
-                    device: renderDevice.device
+                    device: renderDevice.device, materials: sharedCompiler
                 )
             )
         }
@@ -224,6 +228,19 @@ case "report":
         }
         for (type, count) in nonScene.sorted(by: { $0.key < $1.key }) {
             print("  \(type): \(count) (not audited)")
+        }
+
+        // "Renders cleanly" does not distinguish a wallpaper running the author's shaders from
+        // one approximating them, and that distinction is what the transpiler exists to move.
+        if summary.totalLayers > 0 {
+            print("\nFIDELITY")
+            print("  layers               \(summary.totalLayers)")
+            print("  running own shaders  \(summary.layersWithOwnShaders)  (\(Int(summary.ownShaderShare * 100))%)")
+            let effects = summary.compiledEffects + summary.approximatedEffects
+            if effects > 0 {
+                print("  effects as written   \(summary.compiledEffects) of \(effects)")
+                print("  effects approximated \(summary.approximatedEffects)")
+            }
         }
 
         if !summary.featureImpact.isEmpty {
@@ -269,6 +286,14 @@ case "report":
                     },
                 ])
             }
+            // Machine-readable fidelity numbers too, so a later run can be diffed against this
+            // one rather than compared by eye.
+            let fidelity: [String: Any] = [
+                "layers": summary.totalLayers,
+                "layersWithOwnShaders": summary.layersWithOwnShaders,
+                "compiledEffects": summary.compiledEffects,
+                "approximatedEffects": summary.approximatedEffects,
+            ]
             let root: [String: Any] = [
                 "total": summary.total,
                 "supported": summary.supported,
@@ -276,6 +301,7 @@ case "report":
                 "unsupported": summary.unsupported,
                 "failed": summary.failed,
                 "featureImpact": summary.featureImpact.map { ["feature": $0.feature, "wallpapers": $0.wallpapers] },
+                "fidelity": fidelity,
                 "wallpapers": payload,
             ]
             let data = try JSONSerialization.data(

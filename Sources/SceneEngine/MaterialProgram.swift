@@ -98,7 +98,10 @@ public final class MaterialCompiler {
     private let preprocessor = ShaderPreprocessor()
     private let log = Logger(subsystem: "app.diorama", category: "material")
 
-    /// Keyed by shader name, combos and blend, since each combination is a separate pipeline.
+    /// Keyed by the *content* of both preprocessed stages plus the pipeline state, never by
+    /// shader name. Two wallpapers routinely ship different shaders both called
+    /// `genericimage2`, so a name-keyed cache would hand the second one the first one's
+    /// pipeline — and a compiler shared across a library is exactly what auditing one wants.
     private var programs: [String: MaterialProgram] = [:]
 
     public init(
@@ -123,9 +126,6 @@ public final class MaterialCompiler {
             throw MaterialProgramError.noShaderNamed
         }
 
-        let key = Self.cacheKey(shader: shaderName, pass: pass, pixelFormat: pixelFormat)
-        if let existing = programs[key] { return existing }
-
         let provider = SceneAssetShaderProvider(assets: assets)
         let vertexText = try provider.contents(of: shaderName + ".vert")
         let fragmentText = try provider.contents(of: shaderName + ".frag")
@@ -136,6 +136,14 @@ public final class MaterialCompiler {
             provider: provider,
             comboOverrides: pass.combos
         )
+
+        // Preprocessing is string work measured in microseconds and happens at import, so
+        // paying for it before the cache lookup costs nothing and buys a key that cannot
+        // collide.
+        let key = Self.cacheKey(
+            vertex: vertex, fragment: fragment, pass: pass, pixelFormat: pixelFormat
+        )
+        if let existing = programs[key] { return existing }
 
         var diagnostics = vertex.diagnostics + fragment.diagnostics
 
@@ -347,11 +355,48 @@ public final class MaterialCompiler {
         }
     }
 
-    static func cacheKey(shader: String, pass: MaterialPass, pixelFormat: MTLPixelFormat) -> String {
-        let combos = pass.combos
-            .sorted { $0.key < $1.key }
-            .map { "\($0.key)=\($0.value)" }
-            .joined(separator: ",")
-        return "\(shader)|\(combos)|\(pass.blending ?? "normal")|\(pixelFormat.rawValue)"
+    /// The source hashes already cover the combo values, since the combo defines are part of
+    /// the emitted GLSL that was hashed. Blend and pixel format are not in the shader at all
+    /// but do change the pipeline, so they are named here.
+    static func cacheKey(
+        vertex: PreprocessedShader,
+        fragment: PreprocessedShader,
+        pass: MaterialPass,
+        pixelFormat: MTLPixelFormat
+    ) -> String {
+        "\(vertex.sourceHash)|\(fragment.sourceHash)|\(pass.blending ?? "normal")|\(pixelFormat.rawValue)"
+    }
+}
+
+/// Flattens a compiler's multi-line output into something a report can list.
+///
+/// glslang answers with several lines, often with a blank one and a trailing summary. Dropped
+/// verbatim into a findings list it breaks the layout and buries every finding after it, so the
+/// first real line is kept and the rest is counted.
+enum ShaderMessageText {
+    static let limit = 160
+
+    static func oneLine(_ text: String) -> String {
+        let lines = text
+            .split(whereSeparator: \.isNewline)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+
+        guard let first = lines.first else { return text }
+
+        // "parse failed:" on its own says nothing; the line after it is the actual error.
+        var head = first
+        var rest = lines.dropFirst()
+        if head.hasSuffix(":"), let next = rest.first {
+            head += " " + next
+            rest = rest.dropFirst()
+        }
+
+        // The trailing "N compilation errors" line repeats what the count already says.
+        let remaining = rest.filter { !$0.lowercased().contains("compilation error") }
+        if !remaining.isEmpty {
+            head += " (+\(remaining.count) more)"
+        }
+        return head.count > limit ? String(head.prefix(limit - 1)) + "…" : head
     }
 }

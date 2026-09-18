@@ -216,6 +216,47 @@ struct MaterialCompilerTests {
         #expect(program.diagnostics.contains { $0.message.contains("a_SomethingNobodyKnows") })
     }
 
+    @Test("Two wallpapers with same-named but different shaders do not share a pipeline")
+    func distinctWallpapersDoNotCollide() throws {
+        // Workshop content is full of wallpapers that each ship their own `genericimage2`. A
+        // compiler keyed by shader name would hand the second one the first one's pipeline, and
+        // the wallpaper would render as a different wallpaper — which is why auditing a library
+        // with one shared compiler needs a content-derived key.
+        let (compiler, _) = try compiler()
+        let first = try makeWallpaper(extraFiles: ["common.h": Self.commonInclude])
+        let second = try makeWallpaper(
+            fragment: """
+            varying vec2 v_TexCoord;
+            uniform sampler2D g_Texture0;
+            uniform vec4 g_SomethingElse;
+            void main() { gl_FragColor = g_SomethingElse; }
+            """,
+            extraFiles: ["common.h": Self.commonInclude]
+        )
+
+        let pass = MaterialPass(shader: "test")
+        let a = try compiler.program(for: pass, assets: first)
+        let b = try compiler.program(for: pass, assets: second)
+
+        #expect(compiler.compiledProgramCount == 2)
+        #expect(a.fragmentLayout.member(named: "g_Tint") != nil)
+        #expect(b.fragmentLayout.member(named: "g_SomethingElse") != nil)
+        #expect(b.fragmentLayout.member(named: "g_Tint") == nil)
+    }
+
+    @Test("Identical shaders in different wallpapers are compiled once")
+    func identicalShadersAreShared() throws {
+        // The flip side: stock shaders are shared across most of a library, and translating
+        // each one per wallpaper is what makes auditing a library slow.
+        let (compiler, _) = try compiler()
+        let first = try makeWallpaper(extraFiles: ["common.h": Self.commonInclude])
+        let second = try makeWallpaper(extraFiles: ["common.h": Self.commonInclude])
+
+        _ = try compiler.program(for: MaterialPass(shader: "test"), assets: first)
+        _ = try compiler.program(for: MaterialPass(shader: "test"), assets: second)
+        #expect(compiler.compiledProgramCount == 1)
+    }
+
     @Test("A blend mode from the material reaches the pipeline")
     func honoursBlendMode() throws {
         let (compiler, _) = try compiler()

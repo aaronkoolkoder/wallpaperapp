@@ -14,6 +14,10 @@ public struct AuditEntry: Sendable {
     public let layerCount: Int
     public let particleEmitters: Int
     public let scriptCount: Int
+    /// Layers drawing through the material's own compiled shader, out of `layerCount`.
+    public let layersWithOwnShaders: Int
+    public let compiledEffects: Int
+    public let approximatedEffects: Int
     public let loadSeconds: Double
     /// Set when the wallpaper could not be opened at all.
     public let failure: String?
@@ -40,6 +44,17 @@ public struct CompatibilityAudit: Sendable {
         public var detailImpact: [(detail: String, wallpapers: Int)] = []
         public var totalSeconds: Double = 0
 
+        /// Layers across the library, and how many run the author's own shader.
+        public var totalLayers = 0
+        public var layersWithOwnShaders = 0
+        public var compiledEffects = 0
+        public var approximatedEffects = 0
+
+        /// Share of layers rendering as the author wrote them rather than approximated.
+        public var ownShaderShare: Double {
+            totalLayers > 0 ? Double(layersWithOwnShaders) / Double(totalLayers) : 0
+        }
+
         /// Share of the library that renders with nothing missing.
         public var supportedShare: Double {
             total > 0 ? Double(supported) / Double(total) : 0
@@ -57,12 +72,17 @@ public struct CompatibilityAudit: Sendable {
         type: String,
         directory: URL,
         packageURL: URL?,
-        device: any MTLDevice
+        device: any MTLDevice,
+        materials: MaterialCompiler? = nil
     ) -> AuditEntry {
         let started = Date()
         do {
+            // Sharing one compiler across a library is safe and much faster: its program cache
+            // is keyed by shader content, and the translation cache underneath it is too, so
+            // wallpapers built from the same stock shaders translate them once between them.
             let scene = try SceneRenderer.loadScene(
-                directory: directory, packageURL: packageURL, wallpaperID: id, device: device
+                directory: directory, packageURL: packageURL, wallpaperID: id, device: device,
+                materials: materials
             )
             return AuditEntry(
                 id: id, title: title, type: type,
@@ -71,6 +91,9 @@ public struct CompatibilityAudit: Sendable {
                 layerCount: scene.layers.count,
                 particleEmitters: scene.particles.count,
                 scriptCount: scene.scriptBindings.count,
+                layersWithOwnShaders: scene.layersWithOwnShaders,
+                compiledEffects: scene.compiledEffectCount,
+                approximatedEffects: scene.approximatedEffectCount,
                 loadSeconds: Date().timeIntervalSince(started),
                 failure: nil
             )
@@ -79,6 +102,7 @@ public struct CompatibilityAudit: Sendable {
                 id: id, title: title, type: type,
                 level: .unsupported, findings: [], layerCount: 0,
                 particleEmitters: 0, scriptCount: 0,
+                layersWithOwnShaders: 0, compiledEffects: 0, approximatedEffects: 0,
                 loadSeconds: Date().timeIntervalSince(started),
                 failure: error.localizedDescription
             )
@@ -98,6 +122,11 @@ public struct CompatibilityAudit: Sendable {
         var detailCounts: [String: Int] = [:]
 
         for entry in entries {
+            summary.totalLayers += entry.layerCount
+            summary.layersWithOwnShaders += entry.layersWithOwnShaders
+            summary.compiledEffects += entry.compiledEffects
+            summary.approximatedEffects += entry.approximatedEffects
+
             if entry.failure != nil {
                 summary.failed += 1
             } else {

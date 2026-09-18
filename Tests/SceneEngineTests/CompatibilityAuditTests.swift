@@ -11,12 +11,17 @@ struct CompatibilityAuditTests {
         level: CompatibilityLevel = .degraded,
         findings: [CompatibilityFinding] = [],
         failure: String? = nil,
-        layers: Int = 3
+        layers: Int = 3,
+        ownShaders: Int = 0,
+        compiledEffects: Int = 0,
+        approximatedEffects: Int = 0
     ) -> AuditEntry {
         AuditEntry(
             id: id, title: "Scene \(id)", type: "scene", level: level,
             findings: findings, layerCount: layers, particleEmitters: 0,
-            scriptCount: 0, loadSeconds: 0.01, failure: failure
+            scriptCount: 0, layersWithOwnShaders: ownShaders,
+            compiledEffects: compiledEffects, approximatedEffects: approximatedEffects,
+            loadSeconds: 0.01, failure: failure
         )
     }
 
@@ -134,5 +139,26 @@ struct CompatibilityAuditTests {
         #expect(summary.total == 0)
         #expect(summary.supportedShare == 0)
         #expect(summary.featureImpact.isEmpty)
+    }
+
+    @Test("Fidelity is rolled up across the library")
+    func rollsUpFidelity() {
+        // The number that says whether transpiling shaders was worth it: how much of a real
+        // library renders as its author wrote it rather than as an approximation.
+        let summary = CompatibilityAudit().summarize([
+            entry(id: "1", layers: 4, ownShaders: 4, compiledEffects: 2),
+            entry(id: "2", layers: 6, ownShaders: 3, approximatedEffects: 1),
+        ])
+
+        #expect(summary.totalLayers == 10)
+        #expect(summary.layersWithOwnShaders == 7)
+        #expect(abs(summary.ownShaderShare - 0.7) < 0.001)
+        #expect(summary.compiledEffects == 2)
+        #expect(summary.approximatedEffects == 1)
+    }
+
+    @Test("An empty library reports no share rather than dividing by zero")
+    func emptyLibraryShare() {
+        #expect(CompatibilityAudit().summarize([]).ownShaderShare == 0)
     }
 }

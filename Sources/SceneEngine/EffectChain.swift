@@ -222,7 +222,7 @@ extension MaterialCompiler {
             } catch {
                 report.add(
                     .degraded, feature: "Effect",
-                    detail: "\(name): \(error.localizedDescription)"
+                    detail: "\(name): \(ShaderMessageText.oneLine(error.localizedDescription))"
                 )
                 return nil
             }

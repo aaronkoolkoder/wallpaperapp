@@ -25,10 +25,18 @@ public final class SceneAssets {
         self.directory = directory
         self.report = CompatibilityReport(wallpaperID: wallpaperID)
 
-        if let packageURL, FileManager.default.fileExists(atPath: packageURL.path) {
+        // Only a `.pkg` is a package. A wallpaper authored in the editor ships its scene loose
+        // and names `scene.json` as its content file, and callers pass that same URL through —
+        // reading it as an archive fails and used to report every such wallpaper as having an
+        // unreadable package, which is both wrong and alarming.
+        if let packageURL, packageURL.pathExtension.lowercased() == "pkg",
+           FileManager.default.fileExists(atPath: packageURL.path) {
             archive = try? PKGArchive(contentsOf: packageURL)
             if archive == nil {
-                report.add(.unsupported, feature: "Package", detail: "scene.pkg could not be read")
+                report.add(
+                    .unsupported, feature: "Package",
+                    detail: "\(packageURL.lastPathComponent) could not be read"
+                )
             }
         } else {
             archive = nil
