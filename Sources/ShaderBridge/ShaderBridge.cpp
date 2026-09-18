@@ -125,8 +125,12 @@ std::string reflect(const spirv_cross::CompilerMSL &compiler, spv::ExecutionMode
             json += ",";
         }
         first = false;
+        // The component count is what a Metal vertex descriptor needs to pick a format, and
+        // nothing else reports it: the GLSL type is gone by this point.
+        const spirv_cross::SPIRType &type = compiler.get_type(input.base_type_id);
         json += "{\"name\":\"" + escape(input.name) + "\",\"location\":" +
-                std::to_string(compiler.get_decoration(input.id, spv::DecorationLocation)) + "}";
+                std::to_string(compiler.get_decoration(input.id, spv::DecorationLocation)) +
+                ",\"components\":" + std::to_string(type.vecsize) + "}";
     }
     json += "]}";
     return json;

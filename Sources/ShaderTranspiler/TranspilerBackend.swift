@@ -33,9 +33,16 @@ public struct ShaderStageInput: Sendable, Hashable, Codable {
     public var name: String
     public var location: Int
 
-    public init(name: String, location: Int) {
+    /// Scalar components: 2 for a `vec2`, 3 for a `vec3`, and so on.
+    ///
+    /// A Metal vertex descriptor needs this to choose an attribute format, and by the time the
+    /// shader is MSL the GLSL type that would have said so is gone.
+    public var components: Int = 1
+
+    public init(name: String, location: Int, components: Int = 1) {
         self.name = name
         self.location = location
+        self.components = components
     }
 }
 

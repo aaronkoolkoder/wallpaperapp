@@ -437,6 +437,9 @@ case "shader":
         for sampler in translated.reflection.samplers {
             print("// sampler(\(sampler.slot)): \(sampler.name)")
         }
+        for input in translated.reflection.inputs {
+            print("// in(\(input.location)): \(input.name) x\(input.components)")
+        }
         print(translated.msl)
     } catch { fail("\(error)") }
 

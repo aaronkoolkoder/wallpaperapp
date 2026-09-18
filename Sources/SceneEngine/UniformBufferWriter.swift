@@ -1,0 +1,213 @@
+import Foundation
+import ShaderTranspiler
+import WEFormat
+import simd
+
+/// The values Wallpaper Engine supplies to every shader, rather than the wallpaper's author.
+///
+/// Shaders take these as ordinary uniforms with reserved `g_` names, so nothing in the material
+/// declares them and a shader that reads one gets whatever the app puts here. Anything not
+/// listed is reported rather than quietly left at zero — a shader driven by an unsupplied
+/// `g_Time` renders a still frame and looks broken rather than unsupported.
+public struct EngineUniforms: Sendable {
+    public var modelViewProjection: simd_float4x4
+    /// Seconds since the wallpaper started.
+    public var time: Float
+    /// Time of day as a fraction of 24 hours, which day/night shaders branch on.
+    public var dayTime: Float
+    /// Pointer position in normalised screen coordinates.
+    public var pointerPosition: SIMD2<Float>
+    /// Output size in pixels.
+    public var screenSize: SIMD2<Float>
+    /// Per texture slot: width, height, 1/width, 1/height.
+    public var textureResolutions: [SIMD4<Float>]
+    /// 16-band spectrum per channel, when audio reactivity is running.
+    public var audioSpectrumLeft: [Float]
+    public var audioSpectrumRight: [Float]
+
+    public init(
+        modelViewProjection: simd_float4x4 = matrix_identity_float4x4,
+        time: Float = 0,
+        dayTime: Float = 0,
+        pointerPosition: SIMD2<Float> = .zero,
+        screenSize: SIMD2<Float> = SIMD2(1920, 1080),
+        textureResolutions: [SIMD4<Float>] = [],
+        audioSpectrumLeft: [Float] = [],
+        audioSpectrumRight: [Float] = []
+    ) {
+        self.modelViewProjection = modelViewProjection
+        self.time = time
+        self.dayTime = dayTime
+        self.pointerPosition = pointerPosition
+        self.screenSize = screenSize
+        self.textureResolutions = textureResolutions
+        self.audioSpectrumLeft = audioSpectrumLeft
+        self.audioSpectrumRight = audioSpectrumRight
+    }
+
+    /// The value for a reserved name, or `nil` when the app does not supply it.
+    ///
+    /// Several spellings of the matrix are in use across shipped content, so all of the ones
+    /// observed map to the same value rather than only the one this app happens to prefer.
+    public func value(for name: String) -> [Float]? {
+        switch name {
+        case "g_ModelViewProjection", "g_ModelViewProjectionMatrix",
+             "g_ModelViewProjectionMatrixInverse", "g_ViewProjectionMatrix":
+            return Self.floats(of: modelViewProjection)
+        case "g_Time", "g_AnimationTime", "g_GlobalTime":
+            return [time]
+        case "g_DayTime":
+            return [dayTime]
+        case "g_PointerPosition":
+            return [pointerPosition.x, pointerPosition.y]
+        case "g_Screen":
+            return [screenSize.x, screenSize.y]
+        case "g_TexelSize":
+            return [1 / max(screenSize.x, 1), 1 / max(screenSize.y, 1)]
+        case "g_TexelSizeHalf":
+            return [0.5 / max(screenSize.x, 1), 0.5 / max(screenSize.y, 1)]
+        case "g_AudioSpectrum16Left":
+            return audioSpectrumLeft.isEmpty ? nil : audioSpectrumLeft
+        case "g_AudioSpectrum16Right":
+            return audioSpectrumRight.isEmpty ? nil : audioSpectrumRight
+        default:
+            // `g_Texture0Resolution` through `g_Texture7Resolution`.
+            if let slot = Self.textureResolutionSlot(in: name) {
+                guard slot < textureResolutions.count else { return nil }
+                let resolution = textureResolutions[slot]
+                return [resolution.x, resolution.y, resolution.z, resolution.w]
+            }
+            return nil
+        }
+    }
+
+    static func textureResolutionSlot(in name: String) -> Int? {
+        guard name.hasPrefix("g_Texture"), name.hasSuffix("Resolution") else { return nil }
+        let digits = name.dropFirst("g_Texture".count).dropLast("Resolution".count)
+        return Int(digits)
+    }
+
+    /// Column-major, which is how both GLSL and std140 store a matrix.
+    static func floats(of matrix: simd_float4x4) -> [Float] {
+        [matrix.columns.0, matrix.columns.1, matrix.columns.2, matrix.columns.3]
+            .flatMap { [$0.x, $0.y, $0.z, $0.w] }
+    }
+}
+
+/// Fills a shader's constant buffer from three sources, in order of precedence.
+///
+/// The order is what makes a wallpaper look right: the engine's own values win, because a
+/// material cannot meaningfully override the projection matrix; then the material's baked
+/// constants; then the annotation's default. A uniform nothing supplies is left zeroed, which
+/// is the same thing an unbound OpenGL uniform would read.
+public enum UniformBufferWriter {
+
+    /// What happened while filling a buffer, so the compatibility report can say which uniforms
+    /// went unsupplied rather than leaving the wallpaper looking subtly wrong.
+    public struct Result: Sendable {
+        public var bytes: [UInt8]
+        /// Reserved `g_` names the shader reads that this app does not provide.
+        public var unsuppliedEngineUniforms: [String]
+    }
+
+    public static func fill(
+        layout: UniformBlockLayout,
+        declarations: [ShaderUniformDeclaration],
+        constants: [String: DynamicValue] = [:],
+        engine: EngineUniforms
+    ) -> Result {
+        var bytes = [UInt8](repeating: 0, count: layout.size)
+        var unsupplied: [String] = []
+
+        let byName = Dictionary(declarations.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
+
+        for member in layout.members {
+            let declaration = byName[member.name]
+
+            if let values = engine.value(for: member.name) {
+                write(values, into: &bytes, member: member)
+                continue
+            }
+
+            // A reserved name the engine does not know is a real gap: the shader will read
+            // zeros and render something that looks broken rather than unsupported.
+            if member.name.hasPrefix("g_"), declaration?.isUnannotated == true {
+                unsupplied.append(member.name)
+            }
+
+            if let constant = constants[member.name]
+                ?? declaration?.material.flatMap({ constants[$0] }) {
+                write(floats(of: constant), into: &bytes, member: member)
+                continue
+            }
+
+            if let fallback = declaration?.defaultValue {
+                write(fallback.floatComponents, into: &bytes, member: member)
+            }
+        }
+
+        return Result(bytes: bytes, unsuppliedEngineUniforms: unsupplied)
+    }
+
+    /// Writes `values` at a member's offset, respecting std140's internal padding.
+    ///
+    /// Matrices and arrays are not contiguous: a `mat3`'s columns are padded to 16 bytes each,
+    /// and an array's elements are spaced by its stride. Writing them as a flat run would
+    /// corrupt every column or element after the first.
+    static func write(_ values: [Float], into bytes: inout [UInt8], member: UniformBlockMember) {
+        guard !values.isEmpty else { return }
+
+        let componentsPerElement: Int
+        let elementCount: Int
+        switch member.type {
+        case .mat3:
+            componentsPerElement = 3
+            elementCount = 3 * (member.arrayLength ?? 1)
+        case .mat4:
+            componentsPerElement = 4
+            elementCount = 4 * (member.arrayLength ?? 1)
+        default:
+            componentsPerElement = member.type.componentCount
+            elementCount = member.arrayLength ?? 1
+        }
+
+        // A matrix's columns are 16 bytes apart whether or not it is in an array; other types
+        // use the member's own stride, which is the type's size when it is not an array.
+        let elementStride: Int
+        switch member.type {
+        case .mat3, .mat4: elementStride = 16
+        default: elementStride = member.arrayLength == nil ? member.size : member.stride
+        }
+
+        var source = values.makeIterator()
+        for element in 0 ..< elementCount {
+            let base = member.offset + element * elementStride
+            for component in 0 ..< componentsPerElement {
+                guard let value = source.next() else { return }
+                let at = base + component * 4
+                guard at + 4 <= bytes.count else { return }
+                withUnsafeBytes(of: value.bitPattern.littleEndian) { raw in
+                    for (index, byte) in raw.enumerated() { bytes[at + index] = byte }
+                }
+            }
+        }
+    }
+
+    /// Reads a material constant into float components.
+    ///
+    /// Wallpaper Engine writes vectors as space-separated strings here too, the same as in
+    /// shader annotations.
+    static func floats(of value: DynamicValue) -> [Float] {
+        // Matched on the case rather than through the coercing accessors: `stringValue`
+        // promotes a number to its text, which would then be re-parsed through the vector
+        // path and pick up a different rounding.
+        switch value {
+        case .number(let number): [Float(number)]
+        case .bool(let flag): [flag ? 1 : 0]
+        case .vector3(let vector): [Float(vector.x), Float(vector.y), Float(vector.z)]
+        case .string(let text):
+            text.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap { Float($0) }
+        case .null: []
+        }
+    }
+}

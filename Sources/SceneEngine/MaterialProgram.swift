@@ -1,0 +1,357 @@
+import Diagnostics
+import Foundation
+import Metal
+import MetalRenderer
+import ShaderTranspiler
+import WEFormat
+import os
+
+/// Reads shader source out of a wallpaper's assets.
+///
+/// Wallpaper Engine keeps shaders under `shaders/` and writes includes relative to it, so
+/// `#include "common.h"` means `shaders/common.h`. Paths are tried with and without the
+/// prefix because material `shader` fields are written both ways.
+///
+/// `@unchecked Sendable` because `SceneAssets` is a class with mutable caches. The escape is
+/// narrow rather than blanket: this provider is created, used and discarded inside a single
+/// `program(for:)` call on the render queue, and the only method it calls — `data(for:)` — reads
+/// the archive without touching either the texture cache or the report.
+struct SceneAssetShaderProvider: ShaderFileProvider, @unchecked Sendable {
+    let assets: SceneAssets
+
+    func contents(of name: String) throws -> String {
+        let normalized = name.replacingOccurrences(of: "\\", with: "/")
+        var candidates = [normalized]
+        if !normalized.hasPrefix("shaders/") {
+            candidates.append("shaders/" + normalized)
+        }
+
+        for candidate in candidates {
+            if let data = assets.data(for: candidate),
+               let text = String(data: data, encoding: .utf8) {
+                return text
+            }
+        }
+        throw ShaderFileProviderError.notFound(name)
+    }
+}
+
+/// A material pass compiled into something that can be drawn.
+public struct MaterialProgram: @unchecked Sendable {
+    public var name: String
+    public var pipeline: any MTLRenderPipelineState
+
+    /// Constant buffer layouts, per stage. Either can be empty.
+    public var vertexLayout: UniformBlockLayout
+    public var fragmentLayout: UniformBlockLayout
+
+    /// Where each stage's constant buffer binds, when it has one.
+    public var vertexBufferSlot: Int?
+    public var fragmentBufferSlot: Int?
+
+    /// Uniform declarations per stage, carrying the defaults and material keys.
+    public var vertexUniforms: [ShaderUniformDeclaration]
+    public var fragmentUniforms: [ShaderUniformDeclaration]
+
+    /// Sampler name to the Metal texture slot it was actually assigned.
+    public var textureSlots: [String: Int]
+    public var samplerSlots: [String: Int]
+
+    /// Sampler names in the order the shader declares them, which is how a material's
+    /// `textures` array is matched up: entry *n* feeds `g_TextureN`.
+    public var declaredSamplers: [String]
+
+    /// Unit-quad geometry laid out for this shader's own attributes.
+    public var vertexBuffer: any MTLBuffer
+    public var vertexBufferIndex: Int
+    public var vertexCount: Int
+
+    public var diagnostics: [ShaderDiagnostic]
+}
+
+public enum MaterialProgramError: Error, LocalizedError {
+    case noShaderNamed
+    case stageMissing(String)
+    case pipelineFailed(String)
+    case geometryFailed
+
+    public var errorDescription: String? {
+        switch self {
+        case .noShaderNamed: "The material pass names no shader."
+        case .stageMissing(let name): "Shader \"\(name)\" is missing a stage."
+        case .pipelineFailed(let detail): "The Metal pipeline could not be built: \(detail)"
+        case .geometryFailed: "Quad geometry could not be allocated."
+        }
+    }
+}
+
+/// Compiles Wallpaper Engine material passes into Metal pipelines.
+///
+/// This is what closes PLAN.md §5.4: up to here effects were matched by name against built-in
+/// approximations, which covers the common ones and silently flattens everything else. Running
+/// the author's own shader is the difference between a wallpaper that looks like itself and one
+/// that looks close.
+public final class MaterialCompiler {
+    private let device: any MTLDevice
+    private let backend: any TranspilerBackend
+    private let cache: ShaderCache
+    private let preprocessor = ShaderPreprocessor()
+    private let log = Logger(subsystem: "app.diorama", category: "material")
+
+    /// Keyed by shader name, combos and blend, since each combination is a separate pipeline.
+    private var programs: [String: MaterialProgram] = [:]
+
+    public init(
+        device: any MTLDevice,
+        backend: (any TranspilerBackend)? = nil,
+        cache: ShaderCache = ShaderCache()
+    ) {
+        self.device = device
+        self.backend = backend ?? TranspilerBackendFactory.makeDefault()
+        self.cache = cache
+    }
+
+    /// True when shaders can actually be translated in this build.
+    public var isAvailable: Bool { !(backend is UnavailableTranspilerBackend) }
+
+    public func program(
+        for pass: MaterialPass,
+        assets: SceneAssets,
+        pixelFormat: MTLPixelFormat = .bgra8Unorm
+    ) throws -> MaterialProgram {
+        guard let shaderName = pass.shader, !shaderName.isEmpty else {
+            throw MaterialProgramError.noShaderNamed
+        }
+
+        let key = Self.cacheKey(shader: shaderName, pass: pass, pixelFormat: pixelFormat)
+        if let existing = programs[key] { return existing }
+
+        let provider = SceneAssetShaderProvider(assets: assets)
+        let vertexText = try provider.contents(of: shaderName + ".vert")
+        let fragmentText = try provider.contents(of: shaderName + ".frag")
+
+        let (vertex, fragment) = try preprocessor.preprocessPair(
+            vertex: ShaderSource(name: shaderName + ".vert", stage: .vertex, text: vertexText),
+            fragment: ShaderSource(name: shaderName + ".frag", stage: .fragment, text: fragmentText),
+            provider: provider,
+            comboOverrides: pass.combos
+        )
+
+        var diagnostics = vertex.diagnostics + fragment.diagnostics
+
+        let vertexShader = try cache.shader(for: vertex, backend: backend, diagnostics: &diagnostics)
+        let fragmentShader = try cache.shader(for: fragment, backend: backend, diagnostics: &diagnostics)
+
+        let descriptor = MTLRenderPipelineDescriptor()
+        descriptor.label = "material-\(shaderName)"
+        descriptor.vertexFunction = try function(
+            named: vertexShader.reflection.entryPoint, source: vertexShader.msl, stage: "vertex"
+        )
+        descriptor.fragmentFunction = try function(
+            named: fragmentShader.reflection.entryPoint, source: fragmentShader.msl, stage: "fragment"
+        )
+        descriptor.colorAttachments[0].pixelFormat = pixelFormat
+        SceneBuilder.blendMode(named: pass.blending).apply(to: descriptor.colorAttachments[0])
+
+        // Metal shares one index space between vertex attribute buffers and constant buffers,
+        // so the geometry has to go above whatever the shader's own uniform blocks took.
+        let vertexBufferIndex = (vertexShader.reflection.highestBufferSlot ?? -1) + 1
+        let geometry = try quadGeometry(
+            for: vertexShader.reflection.inputs,
+            bufferIndex: vertexBufferIndex,
+            descriptor: descriptor,
+            shaderName: shaderName,
+            diagnostics: &diagnostics
+        )
+
+        let pipeline: any MTLRenderPipelineState
+        do {
+            pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            throw MaterialProgramError.pipelineFailed(error.localizedDescription)
+        }
+
+        let program = MaterialProgram(
+            name: shaderName,
+            pipeline: pipeline,
+            vertexLayout: vertex.layout,
+            fragmentLayout: fragment.layout,
+            vertexBufferSlot: vertexShader.reflection.bufferSlot(for: ShaderPreprocessor.uniformBlockName),
+            fragmentBufferSlot: fragmentShader.reflection.bufferSlot(for: ShaderPreprocessor.uniformBlockName),
+            vertexUniforms: vertex.uniforms,
+            fragmentUniforms: fragment.uniforms,
+            textureSlots: Dictionary(
+                fragmentShader.reflection.textures.map { ($0.name, $0.slot) },
+                uniquingKeysWith: { first, _ in first }
+            ),
+            samplerSlots: Dictionary(
+                fragmentShader.reflection.samplers.map { ($0.name, $0.slot) },
+                uniquingKeysWith: { first, _ in first }
+            ),
+            declaredSamplers: fragment.samplers.map(\.name),
+            vertexBuffer: geometry.buffer,
+            vertexBufferIndex: vertexBufferIndex,
+            vertexCount: geometry.count,
+            diagnostics: diagnostics
+        )
+        programs[key] = program
+        return program
+    }
+
+    public func purge() { programs.removeAll() }
+
+    public var compiledProgramCount: Int { programs.count }
+
+    // MARK: - Pipeline pieces
+
+    private func function(
+        named name: String, source: String, stage: String
+    ) throws -> any MTLFunction {
+        // Compiled from source at runtime rather than from a .metallib: this MSL did not exist
+        // at build time, and `xcrun metal` is not available inside the App Store sandbox.
+        let library: any MTLLibrary
+        do {
+            library = try device.makeLibrary(source: source, options: nil)
+        } catch {
+            throw MaterialProgramError.pipelineFailed(
+                "the \(stage) shader did not compile: \(error.localizedDescription)"
+            )
+        }
+        guard let function = library.makeFunction(name: name) else {
+            throw MaterialProgramError.stageMissing(name)
+        }
+        return function
+    }
+
+    /// Builds unit-quad geometry in whatever layout this shader's attributes ask for.
+    ///
+    /// Interleaved into one buffer laid out to match the shader rather than a fixed struct, so
+    /// a shader that reads only a position is not made to carry texture coordinates, and one
+    /// that reads an attribute we have no meaning for still gets something defined.
+    private func quadGeometry(
+        for inputs: [ShaderStageInput],
+        bufferIndex: Int,
+        descriptor: MTLRenderPipelineDescriptor,
+        shaderName: String,
+        diagnostics: inout [ShaderDiagnostic]
+    ) throws -> (buffer: any MTLBuffer, count: Int) {
+        let attributes = inputs.sorted { $0.location < $1.location }
+        let vertexDescriptor = MTLVertexDescriptor()
+
+        var offset = 0
+        var vertices: [[Float]] = Array(repeating: [], count: Self.quadVertexCount)
+
+        for attribute in attributes {
+            guard let format = Self.format(components: attribute.components) else {
+                diagnostics.append(ShaderDiagnostic(
+                    severity: .degraded,
+                    kind: .unrecognizedConstruct,
+                    message: "Vertex attribute \"\(attribute.name)\" has \(attribute.components) components, which has no Metal equivalent.",
+                    shaderName: shaderName
+                ))
+                continue
+            }
+
+            vertexDescriptor.attributes[attribute.location].format = format
+            vertexDescriptor.attributes[attribute.location].offset = offset
+            vertexDescriptor.attributes[attribute.location].bufferIndex = bufferIndex
+
+            let values = Self.quadValues(for: attribute.name, components: attribute.components)
+            if values == nil {
+                // Zero-filled rather than left undefined: an unknown attribute should make the
+                // layer look wrong in a stable way, not sample uninitialised memory.
+                diagnostics.append(ShaderDiagnostic(
+                    severity: .degraded,
+                    kind: .unrecognizedConstruct,
+                    message: "Vertex attribute \"\(attribute.name)\" has no known meaning and was filled with zeroes.",
+                    shaderName: shaderName
+                ))
+            }
+            let resolved = values ?? Array(
+                repeating: [Float](repeating: 0, count: attribute.components),
+                count: Self.quadVertexCount
+            )
+            for index in 0 ..< Self.quadVertexCount {
+                vertices[index].append(contentsOf: resolved[index])
+            }
+            offset += attribute.components * MemoryLayout<Float>.size
+        }
+
+        // A shader with no attributes at all generates its own geometry; give it a token
+        // buffer so the binding code has one shape to deal with.
+        let stride = max(offset, MemoryLayout<Float>.size)
+        vertexDescriptor.layouts[bufferIndex].stride = stride
+        vertexDescriptor.layouts[bufferIndex].stepFunction = .perVertex
+        if offset > 0 { descriptor.vertexDescriptor = vertexDescriptor }
+
+        let flattened = vertices.flatMap { $0 }
+        let bytes = max(flattened.count * MemoryLayout<Float>.size, stride)
+        guard let buffer = device.makeBuffer(length: bytes, options: .storageModeShared) else {
+            throw MaterialProgramError.geometryFailed
+        }
+        if !flattened.isEmpty {
+            flattened.withUnsafeBytes { raw in
+                buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+            }
+        }
+        buffer.label = "quad-\(shaderName)"
+        return (buffer, Self.quadVertexCount)
+    }
+
+    static let quadVertexCount = 4
+
+    static func format(components: Int) -> MTLVertexFormat? {
+        switch components {
+        case 1: .float
+        case 2: .float2
+        case 3: .float3
+        case 4: .float4
+        default: nil
+        }
+    }
+
+    /// Per-vertex values for the attribute names Wallpaper Engine uses.
+    ///
+    /// Triangle-strip order — bottom-left, bottom-right, top-left, top-right — matching the
+    /// built-in quad renderer, so a scene that mixes materials with and without custom shaders
+    /// does not flip half its layers.
+    static func quadValues(for name: String, components: Int) -> [[Float]]? {
+        let corners: [[Float]] = [[-0.5, -0.5, 0], [0.5, -0.5, 0], [-0.5, 0.5, 0], [0.5, 0.5, 0]]
+        let texCoords: [[Float]] = [[0, 1], [1, 1], [0, 0], [1, 0]]
+
+        let base: [[Float]]
+        switch name.lowercased() {
+        case "a_position", "a_positionvertex", "in_position":
+            base = corners
+        case "a_texcoord", "a_texcoord0", "a_uv", "in_texcoord":
+            base = texCoords
+        case "a_texcoordvec4":
+            // Some shaders take two coordinate sets packed into one attribute.
+            base = texCoords.map { $0 + $0 }
+        case "a_normal":
+            base = Array(repeating: [0, 0, 1], count: quadVertexCount)
+        case "a_color", "a_colour", "a_color0":
+            base = Array(repeating: [1, 1, 1, 1], count: quadVertexCount)
+        default:
+            return nil
+        }
+
+        return base.map { value in
+            var padded = Array(value.prefix(components))
+            while padded.count < components {
+                // Pad a position with w = 1 and anything else with 0, which is what the
+                // equivalent GLSL constructor would do.
+                padded.append(padded.count == 3 && base[0].count >= 3 ? 1 : 0)
+            }
+            return padded
+        }
+    }
+
+    static func cacheKey(shader: String, pass: MaterialPass, pixelFormat: MTLPixelFormat) -> String {
+        let combos = pass.combos
+            .sorted { $0.key < $1.key }
+            .map { "\($0.key)=\($0.value)" }
+            .joined(separator: ",")
+        return "\(shader)|\(combos)|\(pass.blending ?? "normal")|\(pixelFormat.rawValue)"
+    }
+}
