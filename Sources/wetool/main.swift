@@ -277,6 +277,12 @@ case "report":
                     "title": entry.title,
                     "level": entry.level.label,
                     "layers": entry.layerCount,
+                    // Per wallpaper, not only in the rollup: without these a diff can show the
+                    // library-wide number moving without saying which wallpaper improved, which
+                    // is the question you actually want answered after a renderer change.
+                    "layersWithOwnShaders": entry.layersWithOwnShaders,
+                    "compiledEffects": entry.compiledEffects,
+                    "approximatedEffects": entry.approximatedEffects,
                     "particleEmitters": entry.particleEmitters,
                     "scripts": entry.scriptCount,
                     "loadMilliseconds": Int(entry.loadSeconds * 1000),
