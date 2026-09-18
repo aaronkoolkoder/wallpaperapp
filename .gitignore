@@ -32,3 +32,9 @@ web/tsconfig.tsbuildinfo
 dist/
 Resources/Diorama.iconset/
 .dmgvenv/
+
+# Vendored shader toolchain — fetched and built by Scripts/vendor-shader-tools.sh
+Vendor/glslang/
+Vendor/SPIRV-Cross/
+Vendor/install/
+Vendor/*.sha

@@ -12,6 +12,18 @@ jobs:
       - uses: actions/checkout@v4
       - name: Select Xcode
         run: sudo xcode-select -s /Applications/Xcode_26.app || true
+
+      - name: Cache vendored shader toolchain
+        uses: actions/cache@v4
+        with:
+          path: |
+            Vendor/install
+            Sources/ShaderBridge/vendor
+          key: shader-tools-${{ runner.os }}-${{ hashFiles('Scripts/vendor-shader-tools.sh') }}
+
+      - name: Vendor shader toolchain
+        # glslang and SPIRV-Cross are built from pinned tags rather than fetched as binaries.
+        run: brew install cmake ninja && Scripts/vendor-shader-tools.sh
       - name: Build
         run: swift build
       - name: Test

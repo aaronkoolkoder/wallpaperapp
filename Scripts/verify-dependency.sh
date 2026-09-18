@@ -52,16 +52,25 @@ fi
 
 # 4. Malware scan, if ClamAV is present.
 echo "--- malware scan ---"
-if command -v clamscan >/dev/null 2>&1; then
-    clamscan -r --infected --no-summary "$TARGET" 2>&1 | sed 's/^/  /'
-    RC=${PIPESTATUS[0]}
+if ! command -v clamscan >/dev/null 2>&1; then
+    echo "  SKIPPED: clamscan not installed (brew install clamav)"
+elif ! clamscan --version >/dev/null 2>&1 \
+        || clamscan /dev/null 2>&1 | grep -q 'No supported database'; then
+    # A scanner with no signature database finds nothing and exits 0, which this script used to
+    # report as a clean pass. Reporting "no threats found" when nothing was scanned is worse
+    # than not scanning at all, so this is now a failure.
+    echo "  FAIL: clamscan has no signature database — run 'freshclam' first."
+    echo "        Nothing was scanned; do not treat this as a clean result."
+    FAIL=1
+else
+    SCAN_OUTPUT="$(clamscan -r --infected --no-summary "$TARGET" 2>&1)"
+    RC=$?
+    [ -n "$SCAN_OUTPUT" ] && echo "$SCAN_OUTPUT" | sed 's/^/  /'
     case $RC in
         0) echo "  OK: no threats found" ;;
         1) echo "  FAIL: THREAT DETECTED"; FAIL=1 ;;
-        *) echo "  WARNING: scanner error (rc=$RC)" ;;
+        *) echo "  WARNING: scanner error (rc=$RC)"; FAIL=1 ;;
     esac
-else
-    echo "  SKIPPED: clamscan not installed (brew install clamav)"
 fi
 
 echo "=== result: $([ $FAIL -eq 0 ] && echo PASS || echo FAIL) ==="

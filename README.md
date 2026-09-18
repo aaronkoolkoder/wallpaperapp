@@ -73,12 +73,22 @@ on each display; **Wallpaper → Wallpaper Library** (⌘L) opens the full brows
 ## Build from source
 
 ```bash
+# Once: builds glslang and SPIRV-Cross from pinned tags.
+brew install cmake ninja
+Scripts/vendor-shader-tools.sh
+```
+
+```bash
 swift build && swift test
 ```
 
 ```bash
-./Scripts/bundle.sh release && open dist/Diorama.app
+./Scripts/install.sh release      # builds and installs into /Applications
 ```
+
+Installing locally rather than from the DMG is the easier path on your own machine: a
+locally-built app never picks up the quarantine attribute a browser attaches to downloads, so
+Gatekeeper never appears.
 
 Build the installer:
 

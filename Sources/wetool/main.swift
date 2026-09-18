@@ -6,6 +6,7 @@ import LibraryKit
 import MetalRenderer
 import Metal
 import SceneEngine
+import ShaderTranspiler
 import UniformTypeIdentifiers
 import WEFormat
 
@@ -28,6 +29,7 @@ func usage() -> Never {
       wetool pkg extract <scene.pkg> <out-dir>
       wetool tex info <file.tex>         Describe a texture
       wetool manifest <project.json>     Parse and dump a manifest
+      wetool shader <file.frag|.vert>    Translate a shader to Metal and print it
       wetool report <library-dir> [--json <out.json>]
                                          Audit a whole library: what renders,
                                          what does not, and which missing
@@ -343,6 +345,22 @@ case "scene":
             guard CGImageDestinationFinalize(destination) else { fail("could not write PNG") }
             print("rendered \(width)x\(height) to \(outputURL.path)")
         }
+    } catch { fail("\(error)") }
+
+case "shader":
+    guard arguments.count >= 2 else { usage() }
+    let shaderURL = URL(fileURLWithPath: arguments[1])
+    let stage: ShaderStage = shaderURL.pathExtension.lowercased() == "vert" ? .vertex : .fragment
+
+    do {
+        let glsl = try String(contentsOf: shaderURL, encoding: .utf8)
+        let backend = TranspilerBackendFactory.makeDefault()
+        if backend is UnavailableTranspilerBackend {
+            fail("shader toolchain not built — run Scripts/vendor-shader-tools.sh")
+        }
+        let msl = try backend.compileToMSL(glsl: glsl, stage: stage)
+        print("// \(shaderURL.lastPathComponent) -> Metal (\(stage.rawValue))")
+        print(msl)
     } catch { fail("\(error)") }
 
 case "-h", "--help", "help":
