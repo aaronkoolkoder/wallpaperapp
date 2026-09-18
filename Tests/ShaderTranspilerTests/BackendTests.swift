@@ -2,7 +2,19 @@ import Foundation
 import Testing
 @testable import ShaderTranspiler
 
-@Suite("GlslangTranspilerBackend")
+/// True when Scripts/vendor-shader-tools.sh has been run.
+///
+/// The toolchain is an optional build step, so these are skipped rather than failed on a clone
+/// that has not vendored it — a red suite for a dependency someone has deliberately not built
+/// teaches nothing and trains people to ignore failures.
+private var toolchainAvailable: Bool {
+    !(TranspilerBackendFactory.makeDefault() is UnavailableTranspilerBackend)
+}
+
+@Suite(
+    "GlslangTranspilerBackend",
+    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+)
 struct BackendTests {
 
     private let backend = GlslangTranspilerBackend()
@@ -144,10 +156,22 @@ struct BackendTests {
         #expect(!(backend is UnavailableTranspilerBackend))
     }
 
+}
+
+@Suite("TranspilerBackend fallback")
+struct BackendFallbackTests {
+
     @Test("The stand-in reports why it cannot work")
     func unavailableExplainsItself() {
         #expect(throws: TranspilerBackendError.notVendored) {
             try UnavailableTranspilerBackend().compileToMSL(glsl: "x", stage: .fragment)
         }
+    }
+
+    @Test("The factory always returns something usable")
+    func factoryNeverReturnsNil() {
+        // Whether or not the toolchain is present, callers get a backend rather than an
+        // optional they have to reason about.
+        _ = TranspilerBackendFactory.makeDefault()
     }
 }

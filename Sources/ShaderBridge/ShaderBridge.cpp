@@ -5,14 +5,26 @@
 #include <string>
 #include <vector>
 
+// The toolchain is fetched and built by Scripts/vendor-shader-tools.sh rather than committed,
+// so a fresh clone does not have it. Rather than making a CMake step a precondition for
+// `swift build`, the bridge compiles to a stub that reports its own absence — the Swift side
+// already treats that as "shaders unavailable" and degrades through the normal compatibility
+// path.
+#if __has_include(<glslang/Public/ShaderLang.h>) && __has_include(<spirv_msl.hpp>)
+#define DIORAMA_SHADER_TOOLCHAIN_AVAILABLE 1
 #include <glslang/Public/ShaderLang.h>
 #include <glslang/Public/ResourceLimits.h>
 #include <glslang/SPIRV/GlslangToSpv.h>
 #include <spirv_msl.hpp>
+#else
+#define DIORAMA_SHADER_TOOLCHAIN_AVAILABLE 0
+#endif
 
 namespace {
 
+#if DIORAMA_SHADER_TOOLCHAIN_AVAILABLE
 std::once_flag g_initOnce;
+#endif
 
 char *duplicate(const std::string &value) {
     char *result = static_cast<char *>(std::malloc(value.size() + 1));
@@ -24,6 +36,32 @@ char *duplicate(const std::string &value) {
 }
 
 }  // namespace
+
+#if !DIORAMA_SHADER_TOOLCHAIN_AVAILABLE
+
+void diorama_shader_bridge_initialize(void) {}
+
+int diorama_glsl_to_msl(const char *glsl,
+                        DioramaShaderStage stage,
+                        char **out_msl,
+                        char **out_error) {
+    (void)glsl;
+    (void)stage;
+    if (out_msl != nullptr) {
+        *out_msl = nullptr;
+    }
+    if (out_error != nullptr) {
+        *out_error = duplicate(
+            "shader toolchain not built - run Scripts/vendor-shader-tools.sh");
+    }
+    return 100;
+}
+
+void diorama_shader_free(char *value) {
+    std::free(value);
+}
+
+#else
 
 void diorama_shader_bridge_initialize(void) {
     // glslang keeps process-global state and must be initialised exactly once. Wallpapers are
@@ -125,3 +163,5 @@ int diorama_glsl_to_msl(const char *glsl,
 void diorama_shader_free(char *value) {
     std::free(value);
 }
+
+#endif  // DIORAMA_SHADER_TOOLCHAIN_AVAILABLE
