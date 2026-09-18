@@ -14,11 +14,12 @@ struct UniformBufferWriterTests {
         arrayLength: Int? = nil,
         material: String? = nil,
         defaultValue: ShaderUniformValue? = nil,
+        editor: ShaderUniformEditor? = nil,
         unannotated: Bool = false
     ) -> ShaderUniformDeclaration {
         ShaderUniformDeclaration(
             name: name, type: type, arrayLength: arrayLength, material: material,
-            defaultValue: defaultValue, isUnannotated: unannotated
+            defaultValue: defaultValue, editor: editor, isUnannotated: unannotated
         )
     }
 
@@ -325,5 +326,59 @@ struct UniformBufferWriterTests {
         )
         #expect(floats(result, at: 0, count: 1) == [5])
         #expect(floats(result, at: 4, count: 1) == [1])
+    }
+
+    @Test("A three-component colour in a vec4 gets alpha 1, not 0")
+    func colourAlphaDefaultsToOpaque() {
+        // Wallpaper Engine writes colours as three components, which is what a `color` property
+        // holds and what a colour picker produces. Padding the fourth with 0 multiplies the
+        // layer away entirely, and an invisible layer reads as a broken renderer rather than as
+        // a colour with no alpha.
+        let declarations = [declaration("g_Tint", .vec4, material: "tint", editor: .color)]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["tint": .string("1 0 0")],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 4) == [1, 0, 0, 1])
+    }
+
+    @Test("An explicit alpha is left alone")
+    func explicitAlphaSurvives() {
+        let declarations = [declaration("g_Tint", .vec4, material: "tint", editor: .color)]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["tint": .string("1 0 0 0.5")],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 4) == [1, 0, 0, 0.5])
+    }
+
+    @Test("A vec4 that is not a colour is still padded with zero")
+    func nonColourPadsWithZero() {
+        // A direction or a set of weights has no alpha, and inventing a 1 there would be as
+        // wrong as a transparent tint.
+        let declarations = [declaration("g_Params", .vec4, material: "params")]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["params": .string("1 2 3")],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 4) == [1, 2, 3, 0])
+    }
+
+    @Test("A vec3 colour is unaffected")
+    func vec3ColourUnchanged() {
+        let declarations = [declaration("g_Tint", .vec3, material: "tint", editor: .color)]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["tint": .string("1 0 0")],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 3) == [1, 0, 0])
     }
 }

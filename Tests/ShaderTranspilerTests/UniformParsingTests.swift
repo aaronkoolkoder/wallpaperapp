@@ -161,6 +161,21 @@ struct UniformAnnotationParserTests {
         #expect(result.diagnostics.contains { $0.kind == .malformedUniformMetadata })
     }
 
+
+    @Test("A three-component colour default in a vec4 is opaque, not transparent")
+    func colourDefaultIsOpaque() {
+        // Shipped shaders write `"default":"1 1 1"` on a vec4 tint all the time. Padding the
+        // fourth component with 0 makes the layer vanish, which reads as a broken renderer.
+        let result = parse(#"uniform vec4 g_Tint; // {"default":"0.5 0.25 0","type":"color"}"#)
+        #expect(result.uniforms.first?.defaultValue == .vector([0.5, 0.25, 0, 1]))
+    }
+
+    @Test("A vec4 that is not a colour still pads with zero")
+    func nonColourDefaultPadsWithZero() {
+        let result = parse(#"uniform vec4 g_Params; // {"default":"1 2 3"}"#)
+        #expect(result.uniforms.first?.defaultValue == .vector([1, 2, 3, 0]))
+    }
+
     @Test("A sampler's default is its texture path")
     func readsTextureDefault() {
         let result = parse(#"uniform sampler2D g_Noise; // {"default":"materials/noise.tex"}"#)

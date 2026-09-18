@@ -277,7 +277,10 @@ public enum UniformAnnotationParser {
                 material: annotation?.value(for: "material")?.stringValue,
                 label: annotation?.value(for: "label")?.stringValue,
                 defaultValue: annotation.flatMap {
-                    defaultValue($0.value(for: "default"), type: type)
+                    defaultValue(
+                        $0.value(for: "default"), type: type,
+                        isColor: editor($0.value(forAnyOf: ["type", "editor"])) == .color
+                    )
                 },
                 range: annotation.flatMap { range($0.value(for: "range")) },
                 editor: annotation.flatMap { editor($0.value(forAnyOf: ["type", "editor"])) },
@@ -411,7 +414,9 @@ public enum UniformAnnotationParser {
     /// Wallpaper Engine writes vectors as space-separated strings (`"1 0.5 0"`) and scalars
     /// as either numbers or numeric strings, so the type drives the reading rather than the
     /// JSON shape.
-    static func defaultValue(_ value: JSONish?, type: ShaderUniformType) -> ShaderUniformValue? {
+    static func defaultValue(
+        _ value: JSONish?, type: ShaderUniformType, isColor: Bool = false
+    ) -> ShaderUniformValue? {
         guard let value else { return nil }
 
         if type.isOpaque {
@@ -437,11 +442,21 @@ public enum UniformAnnotationParser {
         let expected = type.componentCount
         guard expected > 1 else { return .scalar(components[0]) }
 
-        // A default with the wrong component count is reported by padding rather than
+        // A default with the wrong component count is repaired by padding rather than
         // dropped: a partially-correct colour is closer to the author's intent than black.
         var padded = Array(components.prefix(expected))
-        while padded.count < expected { padded.append(0) }
+        while padded.count < expected { padded.append(padding(for: type, at: padded.count, isColor: isColor)) }
         return .vector(padded)
+    }
+
+    /// What a missing component should be.
+    ///
+    /// Zero for almost everything, but a colour is the exception and an important one: Wallpaper
+    /// Engine writes colours as three components, and a `vec4` tint padded with alpha 0
+    /// multiplies the layer away entirely. An invisible layer reads as a broken renderer rather
+    /// than as a colour with no alpha.
+    static func padding(for type: ShaderUniformType, at index: Int, isColor: Bool) -> Double {
+        isColor && type == .vec4 && index == 3 ? 1 : 0
     }
 
     /// Flattens a JSON value into numbers, accepting `"1 0.5 0"`, `[1, 0.5, 0]` and `1`.

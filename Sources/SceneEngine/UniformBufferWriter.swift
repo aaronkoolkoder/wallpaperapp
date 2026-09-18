@@ -172,13 +172,15 @@ public enum UniformBufferWriter {
             // annotation on the uniform has no property key to match on.
             if let override = declaration?.material.flatMap({ overrides[$0] })
                 ?? overrides[member.name] {
-                write(floats(of: override), into: &bytes, member: member)
+                write(padded(floats(of: override), for: declaration, member: member),
+                      into: &bytes, member: member)
                 continue
             }
 
             if let constant = constants[member.name]
                 ?? declaration?.material.flatMap({ constants[$0] }) {
-                write(floats(of: constant), into: &bytes, member: member)
+                write(padded(floats(of: constant), for: declaration, member: member),
+                      into: &bytes, member: member)
                 continue
             }
 
@@ -188,6 +190,26 @@ public enum UniformBufferWriter {
         }
 
         return unsupplied
+    }
+
+    /// Completes a short value for the member it is going into.
+    ///
+    /// Wallpaper Engine writes colours as three components — that is what a `color` property in
+    /// `project.json` holds and what the colour picker produces — so a `vec4` tint would be
+    /// written with alpha 0 and multiply the layer away entirely. An invisible layer reads as a
+    /// broken renderer rather than as a colour with no alpha. Everything else is left short and
+    /// the remainder stays zeroed, which is what an unset component should be.
+    static func padded(
+        _ values: [Float],
+        for declaration: ShaderUniformDeclaration?,
+        member: UniformBlockMember
+    ) -> [Float] {
+        guard declaration?.editor == .color,
+              member.type == .vec4,
+              member.arrayLength == nil,
+              values.count == 3
+        else { return values }
+        return values + [1]
     }
 
     /// Writes `values` at a member's offset, respecting std140's internal padding.

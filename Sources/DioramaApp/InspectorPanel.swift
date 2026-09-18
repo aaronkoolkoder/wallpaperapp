@@ -479,20 +479,21 @@ private struct PropertyRow: View {
 }
 
 /// Reads a Wallpaper Engine colour value into components.
+///
+/// The `"r g b"` parsing is `DynamicValue.vector3Value`'s, not a second copy of it — the format
+/// already knows how to read one, and two parsers would eventually disagree. What is left here
+/// is clamping, and the grey fallback for a colour written as a single number.
 enum DioramaColour {
     static func components(of value: DynamicValue?) -> (Double, Double, Double) {
-        switch value {
-        case .vector3(let vector):
+        if let vector = value?.vector3Value {
             return (clamp(vector.x), clamp(vector.y), clamp(vector.z))
-        case .string(let text):
-            let parts = text.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap(Double.init)
-            guard parts.count >= 3 else { return (1, 1, 1) }
-            return (clamp(parts[0]), clamp(parts[1]), clamp(parts[2]))
-        case .number(let grey):
-            return (clamp(grey), clamp(grey), clamp(grey))
-        default:
-            return (1, 1, 1)
         }
+        if case .number(let grey) = value {
+            return (clamp(grey), clamp(grey), clamp(grey))
+        }
+        // White rather than black: an unreadable tint that multiplies to nothing would make the
+        // layer vanish, while white leaves it as the texture.
+        return (1, 1, 1)
     }
 
     private static func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
