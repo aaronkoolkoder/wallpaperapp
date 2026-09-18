@@ -77,6 +77,14 @@ public final class EffectChainRunner {
     private let materials: MaterialRenderer
     private let log = Logger(subsystem: "app.diorama", category: "effect")
 
+    /// How many times a pass was given a fresh target because it read the one it writes.
+    ///
+    /// Observable because the alternative is untestable: on a tile-based GPU, sampling a texture
+    /// you are also rendering into happens to return its pre-clear contents from device memory,
+    /// so the broken version produces the right pixels on this hardware and the wrong ones
+    /// elsewhere. A pixel test cannot tell the two apart; this can.
+    public private(set) var hazardsAvoided = 0
+
     public init(materials: MaterialRenderer) {
         self.materials = materials
     }
@@ -110,36 +118,9 @@ public final class EffectChainRunner {
         for (index, pass) in effect.passes.enumerated() {
             let isLast = index == effect.passes.count - 1
 
-            // A pass naming no target writes the chain's output; so does the final pass, whose
-            // target — if it names one — nothing downstream will read.
-            let output: any MTLTexture
-            if isLast {
-                output = destination
-            } else if let name = pass.target {
-                guard let pooled = targets[name] ?? pool.acquire(
-                    width: destination.width,
-                    height: destination.height,
-                    pixelFormat: destination.pixelFormat
-                ) else {
-                    log.error("no target available for \(effect.name, privacy: .public)")
-                    return false
-                }
-                targets[name] = pooled
-                output = pooled.texture
-            } else {
-                output = destination
-            }
-
-            let descriptor = MTLRenderPassDescriptor()
-            descriptor.colorAttachments[0].texture = output
-            descriptor.colorAttachments[0].loadAction = .clear
-            descriptor.colorAttachments[0].storeAction = .store
-            descriptor.colorAttachments[0].clearColor = MTLClearColor(
-                red: 0, green: 0, blue: 0, alpha: 0
-            )
-            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
-            else { return false }
-
+            // Inputs are resolved against the targets *as they stand before this pass runs*,
+            // which is what lets the output allocation below notice that a pass reads the same
+            // target it writes.
             var textures: [String: any MTLTexture] = [:]
             for (slot, name) in pass.program.declaredSamplers.enumerated() {
                 switch pass.inputs[slot] {
@@ -161,6 +142,56 @@ public final class EffectChainRunner {
                     if slot == 0 { textures[name] = source }
                 }
             }
+
+            // A pass naming no target writes the chain's output; so does the final pass, whose
+            // target — if it names one — nothing downstream will read.
+            let output: any MTLTexture
+            var replacing: PooledTexture?
+            if isLast {
+                output = destination
+            } else if let name = pass.target {
+                let existing = targets[name]
+                // Reusing the texture a pass is also reading would make it a render target and
+                // a shader resource at once, which Metal leaves undefined — the pass would
+                // sample whatever the GPU happened to have written so far. Ping-ponging onto a
+                // fresh texture is what a framebuffer-based engine does anyway.
+                let reads = existing.map { pooled in
+                    textures.values.contains { $0 === pooled.texture }
+                } ?? false
+
+                let reusable = reads ? nil : existing
+                guard let pooled = reusable ?? pool.acquire(
+                    width: destination.width,
+                    height: destination.height,
+                    pixelFormat: destination.pixelFormat
+                ) else {
+                    log.error("no target available for \(effect.name, privacy: .public)")
+                    return false
+                }
+                // Counted on the outcome, not on the detection: a counter bumped where the
+                // hazard is *noticed* would keep reporting success if the swap below were
+                // removed, which is how an earlier version of this passed with the fix reverted.
+                if let existing, pooled !== existing {
+                    replacing = existing
+                    hazardsAvoided += 1
+                }
+                targets[name] = pooled
+                output = pooled.texture
+            } else {
+                output = destination
+            }
+            // Released only after the pass is encoded, so the texture it reads stays alive.
+            defer { if let replacing { pool.release(replacing) } }
+
+            let descriptor = MTLRenderPassDescriptor()
+            descriptor.colorAttachments[0].texture = output
+            descriptor.colorAttachments[0].loadAction = .clear
+            descriptor.colorAttachments[0].storeAction = .store
+            descriptor.colorAttachments[0].clearColor = MTLClearColor(
+                red: 0, green: 0, blue: 0, alpha: 0
+            )
+            guard let encoder = commandBuffer.makeRenderCommandEncoder(descriptor: descriptor)
+            else { return false }
 
             var passEngine = engine
             passEngine.screenSize = SIMD2(Float(output.width), Float(output.height))

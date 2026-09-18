@@ -101,6 +101,57 @@ struct UniformAnnotationParserTests {
         #expect(result.uniforms[1].type == .sampler2D)
     }
 
+
+    @Test("A declaration written across several lines is still read")
+    func readsMultiLineDeclaration() {
+        // Not cosmetic: a non-opaque uniform left at global scope is rejected outright under
+        // Vulkan rules, so failing to read one costs the whole shader rather than one property.
+        let result = parse("""
+        uniform
+          vec4
+          g_Split;
+        """)
+        #expect(result.uniforms.first?.name == "g_Split")
+        #expect(result.uniforms.first?.type == .vec4)
+        #expect(result.uniforms.first?.lineCount == 3)
+    }
+
+    @Test("An annotation on the closing line of a wrapped declaration is found")
+    func readsWrappedAnnotation() {
+        let result = parse(#"""
+        uniform vec4
+            g_Tint; // {"material":"tint","default":"1 0 0"}
+        """#)
+        #expect(result.uniforms.first?.material == "tint")
+        #expect(result.uniforms.first?.lineCount == 2)
+    }
+
+    @Test("A declaration missing its semicolon cannot swallow the rest of the shader")
+    func boundsRunawayDeclaration() {
+        // Without a bound, one missing semicolon would consume every following line and report
+        // the whole file as one unreadable declaration.
+        var source = "uniform vec4 g_Broken\n"
+        source += (0 ..< 40).map { "float filler\($0) = 0.0;" }.joined(separator: "\n")
+        let result = parse(source)
+
+        #expect(result.uniforms.isEmpty)
+        #expect(result.diagnostics.contains { $0.severity == .unsupported })
+    }
+
+    @Test("An unreadable declaration is unsupported, not merely degraded")
+    func unreadableDeclarationIsUnsupported() {
+        // It stays in the emitted GLSL and Vulkan rejects it, so the wallpaper renders nothing.
+        // Reporting it as a lost property would make the compatibility report misleading in the
+        // worst direction: a wallpaper marked "partly supported" that shows a blank screen.
+        let result = parse("uniform float a, b;")
+        #expect(result.diagnostics.first?.severity == .unsupported)
+    }
+
+    @Test("A single-line declaration still reports one line")
+    func singleLineSpan() {
+        #expect(parse("uniform vec4 g_A;").uniforms.first?.lineCount == 1)
+    }
+
     @Test("A commented-out uniform is not a uniform")
     func ignoresCommentedDeclarations() {
         let result = parse("""

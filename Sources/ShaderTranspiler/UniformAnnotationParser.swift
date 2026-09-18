@@ -143,8 +143,13 @@ public struct ShaderUniformDeclaration: Sendable, Hashable, Codable {
     /// user-facing properties are annotated. So this doubles as "the host must supply it".
     public var isUnannotated: Bool
 
-    /// 1-based line in the include-expanded source.
+    /// 1-based line in the include-expanded source where the declaration starts.
     public var sourceLine: Int?
+
+    /// How many lines the declaration occupies. More than one when it is written across
+    /// several, which the preprocessor has to know so it removes all of them — leaving half a
+    /// declaration behind would not compile.
+    public var lineCount: Int
 
     public init(
         name: String,
@@ -156,7 +161,8 @@ public struct ShaderUniformDeclaration: Sendable, Hashable, Codable {
         range: ClosedRange<Double>? = nil,
         editor: ShaderUniformEditor? = nil,
         isUnannotated: Bool = false,
-        sourceLine: Int? = nil
+        sourceLine: Int? = nil,
+        lineCount: Int = 1
     ) {
         self.name = name
         self.type = type
@@ -168,6 +174,7 @@ public struct ShaderUniformDeclaration: Sendable, Hashable, Codable {
         self.editor = editor
         self.isUnannotated = isUnannotated
         self.sourceLine = sourceLine
+        self.lineCount = max(1, lineCount)
     }
 }
 
@@ -202,35 +209,59 @@ public enum UniformAnnotationParser {
         var uniforms: [ShaderUniformDeclaration] = []
         var diagnostics: [ShaderDiagnostic] = []
         var seen: Set<String> = []
-        var splitter = CommentSplitter()
-        var blockDepth = 0
 
-        for (offset, rawLine) in SourceText.lines(of: text).enumerated() {
-            let line = offset + 1
-            let scan = splitter.scan(rawLine)
-            let code = scan.code
+        // Scanned up front rather than in the loop: joining a declaration that spans lines needs
+        // to look ahead, and the comment splitter's block-comment state has to advance in order.
+        var splitter = CommentSplitter()
+        let scanned = SourceText.lines(of: text).map { splitter.scan($0) }
+
+        var blockDepth = 0
+        var index = 0
+        while index < scanned.count {
+            let line = index + 1
+            let code = scanned[index].code
+            let depthAtLineStart = blockDepth
+            blockDepth += braceDelta(in: code)
 
             // Uniforms declared inside a block or a function body are not the default-block
             // uniforms we gather, and `uniform` cannot appear in a function anyway. Tracking
             // brace depth keeps a `uniform` inside an existing uniform block from being
             // hoisted out of it.
-            defer { blockDepth += braceDelta(in: code) }
-            guard blockDepth == 0 else { continue }
+            guard depthAtLineStart == 0 else { index += 1; continue }
 
             let (_, trimmed) = SourceText.splitLeadingLayout(
                 code.trimmingCharacters(in: .whitespaces)
             )
-            guard SourceText.startsWithKeyword(trimmed, "uniform") else { continue }
+            guard SourceText.startsWithKeyword(trimmed, "uniform") else { index += 1; continue }
 
             // A block declaration (`uniform Foo { ... }`) is already in the shape Vulkan
             // wants and is left alone.
-            if trimmed.contains("{") { continue }
+            if trimmed.contains("{") { index += 1; continue }
 
-            guard let declarator = declarator(inCode: trimmed) else {
+            // A declaration can be written across several lines. Joining them is what keeps it
+            // out of the emitted GLSL: a non-opaque uniform left at global scope is rejected
+            // outright under Vulkan rules, so failing to read one costs the whole shader
+            // rather than one property.
+            var joined = trimmed
+            var comment = scanned[index].comment
+            var consumed = 1
+            while !joined.contains(";"), consumed < maximumDeclarationLines, index + consumed < scanned.count {
+                let next = scanned[index + consumed]
+                joined += " " + next.code.trimmingCharacters(in: .whitespaces)
+                // The annotation sits on whichever line ends the declaration.
+                if let nextComment = next.comment { comment = nextComment }
+                blockDepth += braceDelta(in: next.code)
+                consumed += 1
+            }
+            defer { index += consumed }
+
+            guard let declarator = declarator(inCode: joined) else {
+                // Severity matters here: this is not a lost property, it is a lost wallpaper.
+                // The declaration stays in the emitted GLSL and Vulkan rules reject it.
                 diagnostics.append(ShaderDiagnostic(
-                    severity: .degraded,
+                    severity: .unsupported,
                     kind: .unrecognizedConstruct,
-                    message: "Could not read this uniform declaration; any property bound to it will be missing.",
+                    message: "Could not read this uniform declaration, so the shader will not compile.",
                     shaderName: shaderName,
                     line: line
                 ))
@@ -263,7 +294,7 @@ public enum UniformAnnotationParser {
             seen.insert(declarator.name)
 
             let annotation = annotationObject(
-                inComment: scan.comment,
+                inComment: comment,
                 shaderName: shaderName,
                 line: line,
                 uniformName: declarator.name,
@@ -285,12 +316,19 @@ public enum UniformAnnotationParser {
                 range: annotation.flatMap { range($0.value(for: "range")) },
                 editor: annotation.flatMap { editor($0.value(forAnyOf: ["type", "editor"])) },
                 isUnannotated: annotation == nil,
-                sourceLine: line
+                sourceLine: line,
+                lineCount: consumed
             ))
         }
 
         return UniformParseResult(uniforms: uniforms, diagnostics: diagnostics)
     }
+
+    /// How many lines a single declaration may span before we give up on it.
+    ///
+    /// Shipped content writes them on one line; a handful wrap a long annotated declaration.
+    /// The bound exists so a file missing a semicolon cannot swallow the rest of the shader.
+    static let maximumDeclarationLines = 8
 
     // MARK: Declaration
 

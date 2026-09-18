@@ -230,9 +230,13 @@ public struct ShaderPreprocessor: Sendable {
             injectable.append((combo.name, value))
         }
 
-        let uniformLines = Set(
-            uniformResult.blockMembers.compactMap(\.sourceLine)
-        )
+        // Every line a gathered declaration occupies, not just its first: one written across
+        // several lines would otherwise leave its tail behind, which does not compile.
+        var uniformLines: Set<Int> = []
+        for member in uniformResult.blockMembers {
+            guard let start = member.sourceLine else { continue }
+            for line in start ..< (start + member.lineCount) { uniformLines.insert(line) }
+        }
 
         // With no table from a paired stage, assign from this stage alone — still avoiding
         // any location the author claimed.
