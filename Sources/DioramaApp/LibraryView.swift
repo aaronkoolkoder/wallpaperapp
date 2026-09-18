@@ -51,12 +51,15 @@ enum LibraryFilter: Hashable, Identifiable, CaseIterable {
 struct LibraryView: View {
     @Bindable var store: LibraryStore
     var systemModel: WallpaperSystemModel?
+    var playlists: PlaylistStore?
     let onPlay: (WallpaperItem) -> Void
+    var onPlayOnDisplay: ((WallpaperItem, CGDirectDisplayID) -> Void)?
 
     @State private var filter: LibraryFilter = .all
     @State private var search = ""
     @State private var selection: WallpaperItem.ID?
     @State private var showsInspector = true
+    @State private var showingPlaylists = false
 
     private var visibleItems: [WallpaperItem] {
         let base = store.items.filter { filter.matches($0) }
@@ -69,6 +72,14 @@ struct LibraryView: View {
 
     private var selectedItem: WallpaperItem? {
         selection.flatMap { id in store.items.first { $0.id == id } }
+    }
+
+    /// Which displays are currently showing the selected wallpaper.
+    private var displaysShowingSelection: Set<CGDirectDisplayID> {
+        guard let selection, let systemModel else { return [] }
+        return Set(
+            systemModel.displays.filter { $0.wallpaperID == selection }.map(\.id)
+        )
     }
 
     private var playingIDs: Set<String> {
@@ -87,12 +98,37 @@ struct LibraryView: View {
             InspectorPanel(
                 item: selectedItem,
                 isPlaying: selectedItem.map { playingIDs.contains($0.id) } ?? false,
-                onPlay: { if let item = selectedItem { onPlay(item) } }
+                displays: systemModel?.displayTargets ?? [],
+                displaysShowingItem: displaysShowingSelection,
+                onPlay: { if let item = selectedItem { onPlay(item) } },
+                onPlayOnDisplay: { displayID in
+                    if let item = selectedItem { onPlayOnDisplay?(item, displayID) }
+                },
+                onAddToPlaylist: playlists == nil ? nil : { showingPlaylists = true }
             )
             .inspectorColumnWidth(min: 260, ideal: 300, max: 380)
         }
         .toolbar { toolbarContent }
         .frame(minWidth: 940, minHeight: 620)
+        .sheet(isPresented: $showingPlaylists) {
+            if let playlists {
+                VStack(spacing: 0) {
+                    PlaylistPanel(
+                        store: playlists,
+                        library: store,
+                        selectedWallpaperID: selection
+                    )
+                    Divider()
+                    HStack {
+                        Spacer()
+                        Button("Done") { showingPlaylists = false }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                    .padding(12)
+                }
+                .frame(width: 440, height: 420)
+            }
+        }
         .task { if store.rootURL == nil { store.restore() } }
     }
 
@@ -112,6 +148,18 @@ struct LibraryView: View {
                     Label(entry.title, systemImage: entry.symbol)
                         .badge(store.items.filter { entry.matches($0) }.count)
                         .tag(entry)
+                }
+            }
+
+            if let playlists {
+                Section("Rotation") {
+                    Button {
+                        showingPlaylists = true
+                    } label: {
+                        Label("Playlists", systemImage: "list.bullet.rectangle")
+                            .badge(playlists.playlists.count)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }

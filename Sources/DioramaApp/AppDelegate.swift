@@ -239,9 +239,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
-        let root = LibraryView(store: library, systemModel: model) { [weak self] item in
-            self?.play(item)
-        }
+        let root = LibraryView(
+            store: library,
+            systemModel: model,
+            playlists: playlists,
+            onPlay: { [weak self] item in self?.play(item) },
+            onPlayOnDisplay: { [weak self] item, displayID in
+                self?.model?.play(item, on: displayID)
+            }
+        )
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 980, height: 660),
             styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],

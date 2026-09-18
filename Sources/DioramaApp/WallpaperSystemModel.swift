@@ -127,6 +127,18 @@ final class WallpaperSystemModel {
         refresh()
     }
 
+    /// Displays a wallpaper can be sent to, main first.
+    var displayTargets: [(id: CGDirectDisplayID, name: String)] {
+        displays.map { (id: $0.id, name: $0.name) }
+    }
+
+    func isPlaying(_ wallpaperID: String, on displayID: CGDirectDisplayID? = nil) -> Bool {
+        guard let displayID else {
+            return displays.contains { $0.wallpaperID == wallpaperID }
+        }
+        return displays.first { $0.id == displayID }?.wallpaperID == wallpaperID
+    }
+
     func clear(_ displayID: CGDirectDisplayID) {
         playback.stop(on: displayID)
         refresh()

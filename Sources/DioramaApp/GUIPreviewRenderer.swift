@@ -64,8 +64,16 @@ enum GUIPreviewRenderer {
         )
 
         write(
-            InspectorPanel(item: sample, isPlaying: true, onPlay: {})
-                .frame(width: 300, height: 700),
+            InspectorPanel(
+                item: sample, isPlaying: false,
+                displays: [(id: 1, name: "Built-in Retina Display"), (id: 2, name: "Studio Display")],
+                displaysShowingItem: [2],
+                onPlay: {}, onPlayOnDisplay: { _ in }, onAddToPlaylist: {}
+            )
+            .frame(width: 300, height: 760)
+            // Without a backdrop the panel renders white-on-white: its text uses the palette's
+            // light ink, which only works against the recessed surface it sits on in the window.
+            .background(Design.Surface.recessed),
             to: directory.appendingPathComponent("inspector.png")
         )
 
@@ -204,8 +212,13 @@ private struct LibraryChromePreview: View {
             .frame(maxWidth: .infinity)
             .background(Design.Surface.base)
 
-            InspectorPanel(item: items.first, isPlaying: true, onPlay: {})
-                .frame(width: 300)
+            InspectorPanel(
+                item: items.first, isPlaying: true,
+                displays: [(id: 1, name: "Built-in Retina Display"), (id: 2, name: "Studio Display")],
+                displaysShowingItem: [1],
+                onPlay: {}, onPlayOnDisplay: { _ in }, onAddToPlaylist: {}
+            )
+            .frame(width: 300)
                 .background(Design.Surface.recessed)
         }
     }

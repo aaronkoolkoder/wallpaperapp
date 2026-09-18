@@ -13,7 +13,11 @@ struct InspectorPanel: View {
     @Environment(\.isOffscreenRendering) private var isOffscreenRendering
     let item: WallpaperItem?
     let isPlaying: Bool
+    var displays: [(id: CGDirectDisplayID, name: String)] = []
+    var displaysShowingItem: Set<CGDirectDisplayID> = []
     let onPlay: () -> Void
+    var onPlayOnDisplay: ((CGDirectDisplayID) -> Void)?
+    var onAddToPlaylist: (() -> Void)?
 
     var body: some View {
         Group {
@@ -104,6 +108,54 @@ struct InspectorPanel: View {
 
     @ViewBuilder
     private func actions(for item: WallpaperItem) -> some View {
+        VStack(spacing: 8) {
+            primaryAction(for: item)
+
+            // Only worth offering when there is more than one display to choose between.
+            //
+            // `Menu` is one of the views `ImageRenderer` cannot lay out — it draws SwiftUI's
+            // cannot-render placeholder and corrupts the layout of everything after it, which
+            // is how this was spotted. The offscreen branch keeps the harness meaningful.
+            if displays.count > 1, item.isPlayable, isOffscreenRendering {
+                Label("Set on One Display", systemImage: "display.2")
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 7)
+                    .raisedSurface(radius: Design.Radius.control, fill: Design.Surface.inset)
+            } else if displays.count > 1, item.isPlayable {
+                Menu {
+                    Button("All Displays") { onPlay() }
+                    Divider()
+                    ForEach(displays, id: \.id) { display in
+                        Button {
+                            onPlayOnDisplay?(display.id)
+                        } label: {
+                            if displaysShowingItem.contains(display.id) {
+                                Label(display.name, systemImage: "checkmark")
+                            } else {
+                                Text(display.name)
+                            }
+                        }
+                    }
+                } label: {
+                    Label("Set on One Display", systemImage: "display.2")
+                        .frame(maxWidth: .infinity)
+                }
+                .menuStyle(.borderlessButton)
+                .controlSize(.regular)
+            }
+
+            if let onAddToPlaylist, item.isPlayable {
+                Button(action: onAddToPlaylist) {
+                    Label("Add to a Playlist", systemImage: "text.badge.plus")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.regular)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func primaryAction(for item: WallpaperItem) -> some View {
         if isPlaying {
             // A state, not a disabled control. A greyed-out prominent button reads as something
             // you failed to be allowed to press, rather than as something already true.
