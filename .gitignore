@@ -38,3 +38,6 @@ Vendor/glslang/
 Vendor/SPIRV-Cross/
 Vendor/install/
 Vendor/*.sha
+
+# Staged by Scripts/vendor-shader-tools.sh — regenerated, not source
+Sources/ShaderBridge/vendor/
