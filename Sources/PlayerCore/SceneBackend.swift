@@ -28,6 +28,10 @@ public final class SceneBackend: WallpaperBackend {
     public var audioSource: (() -> AudioFrame)?
     private let log = Logger(subsystem: "app.diorama", category: "scene")
 
+    /// Outlives individual wallpapers so translation is paid for once per shader rather than
+    /// once per switch. See `MaterialCompilerFactory` for why the compiler itself is not.
+    private let materialCompilers = MaterialCompilerFactory()
+
     public init() {
         report = CompatibilityReport(wallpaperID: "")
     }
@@ -43,7 +47,8 @@ public final class SceneBackend: WallpaperBackend {
             directory: request.baseURL,
             packageURL: request.contentURL,
             wallpaperID: request.id,
-            device: renderDevice.device
+            device: renderDevice.device,
+            materials: materialCompilers.makeCompiler(device: renderDevice.device)
         )
         renderer.setScene(scene)
 

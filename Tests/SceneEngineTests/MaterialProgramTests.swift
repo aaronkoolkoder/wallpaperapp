@@ -267,3 +267,27 @@ struct MaterialCompilerTests {
         #expect(compiler.compiledProgramCount == 2)
     }
 }
+
+@Suite(
+    "MaterialCompilerFactory",
+    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+)
+struct MaterialCompilerFactoryTests {
+
+    @Test("Each wallpaper gets its own compiler over one shared cache")
+    func separateCompilersSharedCache() throws {
+        // The lifetime split is the point: pipelines are per wallpaper so a long playlist does
+        // not accumulate them, while translations are shared so a wallpaper coming back round
+        // is not re-translated.
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let factory = MaterialCompilerFactory(cache: ShaderCache(directory: nil))
+
+        let first = factory.makeCompiler(device: device)
+        let second = factory.makeCompiler(device: device)
+
+        #expect(first !== second)
+        #expect(first.isAvailable)
+        #expect(second.isAvailable)
+        #expect(first.compiledProgramCount == 0)
+    }
+}

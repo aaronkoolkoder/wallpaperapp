@@ -166,8 +166,6 @@ public final class MaterialRenderer {
 
     public func resetCounters() { missingTextureBindings = 0 }
 
-    public func purge() { scratchBuffers.removeAll() }
-
     // MARK: - Buffers
 
     /// Metal's `setBytes` fast path stops at 4KB; above that the data has to live in a buffer.

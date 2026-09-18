@@ -206,8 +206,6 @@ public final class MaterialCompiler {
         return program
     }
 
-    public func purge() { programs.removeAll() }
-
     public var compiledProgramCount: Int { programs.count }
 
     // MARK: - Pipeline pieces
@@ -398,5 +396,26 @@ enum ShaderMessageText {
             head += " (+\(remaining.count) more)"
         }
         return head.count > limit ? String(head.prefix(limit - 1)) + "…" : head
+    }
+}
+
+/// Vends a compiler per wallpaper over one long-lived translation cache.
+///
+/// The two have deliberately different lifetimes, and getting them the same way round is a
+/// mistake in either direction. The cache should outlive individual wallpapers: translation is
+/// the expensive half, and paying for it again every time a playlist comes back round to a
+/// wallpaper is waste. The compiler should not: it holds a Metal pipeline and a vertex buffer
+/// per material, and keeping those for every wallpaper a playlist has ever shown grows without
+/// bound over a long session. Rebuilding a pipeline from already-translated MSL costs a few
+/// milliseconds on the switch path, where a brief transition is expected anyway.
+public final class MaterialCompilerFactory {
+    private let cache: ShaderCache
+
+    public init(cache: ShaderCache = ShaderCache()) {
+        self.cache = cache
+    }
+
+    public func makeCompiler(device: any MTLDevice) -> MaterialCompiler {
+        MaterialCompiler(device: device, cache: cache)
     }
 }
