@@ -26,6 +26,19 @@ public struct RenderableLayer: @unchecked Sendable {
     public var effects: [PostEffect] = []
     public var isVisible: Bool
 
+    /// The material's own compiled shader, when it could be built.
+    ///
+    /// Nil means this layer draws through the built-in quad shader instead — either because the
+    /// shader toolchain is not vendored in this build, or because the material's shader could
+    /// not be compiled. Both cases are reported; neither drops the layer.
+    public var program: MaterialProgram?
+
+    /// Textures for the material's samplers, keyed by GLSL name (`g_Texture0` and friends).
+    public var materialTextures: [String: any MTLTexture] = [:]
+
+    /// Uniform values baked into the material by the wallpaper's author.
+    public var materialConstants: [String: DynamicValue] = [:]
+
     /// Model matrix with a camera offset folded into the translation.
     public func modelMatrix(cameraOffset: SIMD2<Float>) -> simd_float4x4 {
         var matrix = modelMatrix
@@ -186,10 +199,14 @@ public struct SceneBuilder {
         return resolved
     }
 
+    /// - Parameter materials: compiles each material's own shader when supplied. Without one,
+    ///   every layer draws through the built-in quad shader, which is what the app did before
+    ///   the transpiler existed and remains the fallback when a shader will not compile.
     public func build(
         document: SceneDocument,
         assets: SceneAssets,
-        device: any MTLDevice
+        device: any MTLDevice,
+        materials: MaterialCompiler? = nil
     ) -> RenderableScene {
         // Findings raised *during* this build only. The asset resolver's own findings are
         // merged at the end, not snapshotted here: CompatibilityReport is a value type, so
@@ -209,7 +226,9 @@ public struct SceneBuilder {
         for object in document.objects {
             switch object.kind {
             case .image:
-                if var layer = buildImageLayer(object, assets: assets, device: device, report: &report) {
+                if var layer = buildImageLayer(
+                    object, assets: assets, device: device, materials: materials, report: &report
+                ) {
                     layer.effects = resolveEffects(
                         object.effects, assets: assets,
                         owner: layer.name, report: &report
@@ -377,6 +396,7 @@ public struct SceneBuilder {
         _ object: SceneObject,
         assets: SceneAssets,
         device: any MTLDevice,
+        materials: MaterialCompiler?,
         report: inout CompatibilityReport
     ) -> RenderableLayer? {
         guard let imagePath = object.image else { return nil }
@@ -408,7 +428,12 @@ public struct SceneBuilder {
         let colour = object.color ?? WEVector3(1, 1, 1)
         let parallax = object.parallaxDepth
 
-        return RenderableLayer(
+        let compiled = compileMaterial(
+            pass, name: imagePath, assets: assets, device: device,
+            primaryTexture: texture, materials: materials, report: &report
+        )
+
+        var layer = RenderableLayer(
             name: object.name ?? imagePath,
             origin: SIMD3(Float(origin.x), Float(origin.y), Float(origin.z)),
             angles: SIMD3(
@@ -428,5 +453,67 @@ public struct SceneBuilder {
             ),
             isVisible: object.visible?.staticValue ?? true
         )
+        layer.program = compiled?.program
+        layer.materialTextures = compiled?.textures ?? [:]
+        layer.materialConstants = pass.constantShaderValues
+        return layer
+    }
+
+    /// Compiles a pass's shader and resolves the textures it samples.
+    ///
+    /// Returns nil — and reports why — whenever the layer should fall back to the built-in quad
+    /// shader. Falling back rather than dropping the layer matters: a wallpaper missing one
+    /// effect is still recognisably itself, while a wallpaper missing a layer is not.
+    private func compileMaterial(
+        _ pass: MaterialPass,
+        name: String,
+        assets: SceneAssets,
+        device: any MTLDevice,
+        primaryTexture: (any MTLTexture)?,
+        materials: MaterialCompiler?,
+        report: inout CompatibilityReport
+    ) -> (program: MaterialProgram, textures: [String: any MTLTexture])? {
+        guard let materials, materials.isAvailable else { return nil }
+        guard let shader = pass.shader, !shader.isEmpty else { return nil }
+
+        let program: MaterialProgram
+        do {
+            program = try materials.program(for: pass, assets: assets)
+        } catch {
+            report.add(
+                .degraded, feature: "Shader",
+                detail: "\(shader): \(error.localizedDescription) — drawn without it"
+            )
+            return nil
+        }
+
+        for diagnostic in program.diagnostics where diagnostic.severity != .info {
+            report.add(
+                diagnostic.severity == .unsupported ? .unsupported : .degraded,
+                feature: "Shader", detail: "\(shader): \(diagnostic.message)"
+            )
+        }
+
+        // A material's `textures` array is positional: entry n feeds the shader's nth declared
+        // sampler, which by Wallpaper Engine's convention is `g_TextureN`.
+        var textures: [String: any MTLTexture] = [:]
+        for (index, path) in pass.textures.enumerated() {
+            let samplerName = index < program.declaredSamplers.count
+                ? program.declaredSamplers[index]
+                : "g_Texture\(index)"
+            if index == 0, let primaryTexture {
+                textures[samplerName] = primaryTexture
+                continue
+            }
+            guard let path, !path.isEmpty else { continue }
+            if let texture = assets.texture(at: path, device: device) {
+                textures[samplerName] = texture
+            }
+        }
+        if textures.isEmpty, let primaryTexture, let first = program.declaredSamplers.first {
+            textures[first] = primaryTexture
+        }
+
+        return (program, textures)
     }
 }

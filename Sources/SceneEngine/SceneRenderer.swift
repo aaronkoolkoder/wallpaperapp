@@ -14,11 +14,27 @@ import os
 /// mode. Effect chains, particles, text and SceneScript come later; the compatibility report
 /// carried on the scene already says which of those a given wallpaper needed.
 public final class SceneRenderer {
+    /// One draw, plus whatever it needs if it runs the material's own shader.
+    ///
+    /// Carried together rather than split into two lists because composition order is the whole
+    /// point: a layer drawn out of turn appears in front of something it should be behind.
+    struct SceneDraw {
+        var quad: QuadDraw
+        var program: MaterialProgram?
+        var textures: [String: any MTLTexture] = [:]
+        var constants: [String: DynamicValue] = [:]
+    }
+
     private let renderDevice: RenderDevice
     private let quads: QuadRenderer
+    private let materials: MaterialRenderer
     private let post: PostProcessor
     private let pool: FBOPool
     private let log = Logger(subsystem: "app.diorama", category: "scene-render")
+
+    /// Reserved uniform names shaders asked for that this app does not supply, collected once
+    /// rather than per frame so the log does not fill up.
+    public private(set) var unsuppliedEngineUniforms: Set<String> = []
 
     public private(set) var scene: RenderableScene?
     public private(set) var framesRendered: UInt64 = 0
@@ -37,7 +53,14 @@ public final class SceneRenderer {
     /// Reused across frames. Particle emitters can produce thousands of draws, and rebuilding
     /// this array every frame would allocate on the render path — exactly what PLAN.md §6.2
     /// forbids.
-    private var drawScratch: [QuadDraw] = []
+    private var drawScratch: [SceneDraw] = []
+
+    /// Scratch for a run of consecutive draws that share the built-in shader, so batching
+    /// survives the dispatch between the two paths.
+    private var batchScratch: [QuadDraw] = []
+
+    /// Reused per frame for the same reason: emitters produce thousands of quads.
+    private var particleScratch: [QuadDraw] = []
 
     /// Layers as scripts have most recently left them. Refreshed from the scene when it is set,
     /// then mutated in place each frame so the scene itself stays immutable.
@@ -46,6 +69,7 @@ public final class SceneRenderer {
     public init(renderDevice: RenderDevice) throws {
         self.renderDevice = renderDevice
         self.quads = try QuadRenderer(device: renderDevice.device)
+        self.materials = try MaterialRenderer(device: renderDevice.device)
         self.post = try PostProcessor(device: renderDevice.device)
         self.pool = FBOPool(device: renderDevice.device)
     }
@@ -65,7 +89,8 @@ public final class SceneRenderer {
         directory: URL,
         packageURL: URL?,
         wallpaperID: String,
-        device: any MTLDevice
+        device: any MTLDevice,
+        materials: MaterialCompiler? = nil
     ) throws -> RenderableScene {
         let assets = SceneAssets(
             wallpaperID: wallpaperID, directory: directory, packageURL: packageURL
@@ -74,7 +99,10 @@ public final class SceneRenderer {
             throw SceneError.missingSceneDocument
         }
         let document = try JSONDecoder().decode(SceneDocument.self, from: sceneData)
-        return SceneBuilder().build(document: document, assets: assets, device: device)
+        return SceneBuilder().build(
+            document: document, assets: assets, device: device,
+            materials: materials ?? MaterialCompiler(device: device)
+        )
     }
 
     public func render(to layer: CAMetalLayer, timestamp: CFTimeInterval = CACurrentMediaTime()) {
@@ -119,7 +147,7 @@ public final class SceneRenderer {
                 return
             }
             buildDraws(scene: scene, cameraOffset: cameraOffset, into: &drawScratch)
-            quads.encode(
+            encodeDraws(
                 drawScratch, into: encoder, projection: projection, pixelFormat: layer.pixelFormat
             )
             encoder.endEncoding()
@@ -139,6 +167,83 @@ public final class SceneRenderer {
 
         pool.endFrame()
         framesRendered &+= 1
+    }
+
+    /// Encodes draws in order, switching between the built-in shader and each material's own.
+    ///
+    /// Consecutive draws that share the built-in shader are still batched; a draw with its own
+    /// program flushes the batch first so nothing is reordered around it.
+    private func encodeDraws(
+        _ draws: [SceneDraw],
+        into encoder: any MTLRenderCommandEncoder,
+        projection: simd_float4x4,
+        pixelFormat: MTLPixelFormat
+    ) {
+        guard !draws.isEmpty else { return }
+        batchScratch.removeAll(keepingCapacity: true)
+
+        func flush() {
+            guard !batchScratch.isEmpty else { return }
+            quads.encode(
+                batchScratch, into: encoder, projection: projection, pixelFormat: pixelFormat
+            )
+            batchScratch.removeAll(keepingCapacity: true)
+        }
+
+        for draw in draws {
+            guard let program = draw.program else {
+                batchScratch.append(draw.quad)
+                continue
+            }
+            flush()
+            let unsupplied = materials.encode(
+                program,
+                context: MaterialRenderer.DrawContext(
+                    transform: draw.quad.transform,
+                    projection: projection,
+                    textures: draw.textures,
+                    constants: draw.constants,
+                    engine: engineUniforms()
+                ),
+                into: encoder
+            )
+            if !unsupplied.isEmpty { unsuppliedEngineUniforms.formUnion(unsupplied) }
+        }
+        flush()
+    }
+
+    /// The values the app supplies to every shader this frame.
+    private func engineUniforms() -> EngineUniforms {
+        EngineUniforms(
+            time: Float(clock.elapsed),
+            dayTime: Self.dayTimeFraction(),
+            pointerPosition: pointer,
+            audioSpectrumLeft: Self.spectrum16(from: audio.left),
+            audioSpectrumRight: Self.spectrum16(from: audio.right)
+        )
+    }
+
+    /// Folds the analyser's 64 bands into the 16 Wallpaper Engine shaders declare.
+    ///
+    /// Averaged rather than sampled every fourth band: a shader reacting to a narrow band would
+    /// otherwise miss energy that lands in the three bands next to it and look unresponsive.
+    static func spectrum16(from bands: [Float]) -> [Float] {
+        let target = 16
+        guard bands.count >= target else {
+            return bands + [Float](repeating: 0, count: target - bands.count)
+        }
+        let group = bands.count / target
+        return (0 ..< target).map { index in
+            let slice = bands[(index * group) ..< min((index + 1) * group, bands.count)]
+            return slice.isEmpty ? 0 : slice.reduce(0, +) / Float(slice.count)
+        }
+    }
+
+    /// Time of day as a fraction of 24 hours, which day/night shaders branch on.
+    static func dayTimeFraction(now: Date = Date(), calendar: Calendar = .current) -> Float {
+        let components = calendar.dateComponents([.hour, .minute, .second], from: now)
+        let seconds = (components.hour ?? 0) * 3600 + (components.minute ?? 0) * 60 + (components.second ?? 0)
+        return Float(seconds) / 86_400
     }
 
     /// Evaluate every scripted property for this frame.
@@ -165,23 +270,35 @@ public final class SceneRenderer {
 
     /// Fill `draws` with every visible layer and particle, in composition order.
     private func buildDraws(
-        scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [QuadDraw]
+        scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [SceneDraw]
     ) {
         draws.removeAll(keepingCapacity: true)
         for sceneLayer in workingLayers where sceneLayer.isVisible {
-            draws.append(
-                QuadDraw(
-                    transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
-                    tint: sceneLayer.tint,
-                    texture: sceneLayer.texture,
-                    blend: sceneLayer.blend
-                )
-            )
+            draws.append(Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset))
         }
+
+        // Particles always use the built-in shader: an emitter's material describes the sprite,
+        // and the thousands of quads it produces are batched as one draw run.
+        particleScratch.removeAll(keepingCapacity: true)
         for system in scene.particles {
             system.update(deltaTime: clock.delta)
-            system.appendDraws(to: &draws, cameraOffset: cameraOffset)
+            system.appendDraws(to: &particleScratch, cameraOffset: cameraOffset)
         }
+        for quad in particleScratch { draws.append(SceneDraw(quad: quad, program: nil)) }
+    }
+
+    static func sceneDraw(for layer: RenderableLayer, cameraOffset: SIMD2<Float>) -> SceneDraw {
+        SceneDraw(
+            quad: QuadDraw(
+                transform: layer.modelMatrix(cameraOffset: cameraOffset),
+                tint: layer.tint,
+                texture: layer.texture,
+                blend: layer.blend
+            ),
+            program: layer.program,
+            textures: layer.materialTextures,
+            constants: layer.materialConstants
+        )
     }
 
     /// Composition path for scenes that post-process.
@@ -208,7 +325,7 @@ public final class SceneRenderer {
 
         var isFirstWrite = true
 
-        func drawBatch(_ draws: [QuadDraw], into target: any MTLTexture, clearFirst: Bool) {
+        func drawBatch(_ draws: [SceneDraw], into target: any MTLTexture, clearFirst: Bool) {
             guard !draws.isEmpty || clearFirst else { return }
             let pass = MTLRenderPassDescriptor()
             pass.colorAttachments[0].texture = target
@@ -218,21 +335,16 @@ public final class SceneRenderer {
                 ? clear
                 : MTLClearColor(red: 0, green: 0, blue: 0, alpha: 0)
             guard let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) else { return }
-            quads.encode(
+            encodeDraws(
                 draws, into: encoder, projection: projection, pixelFormat: target.pixelFormat
             )
             encoder.endEncoding()
         }
 
-        var batch: [QuadDraw] = []
+        var batch: [SceneDraw] = []
 
         for sceneLayer in workingLayers where sceneLayer.isVisible {
-            let draw = QuadDraw(
-                transform: sceneLayer.modelMatrix(cameraOffset: cameraOffset),
-                tint: sceneLayer.tint,
-                texture: sceneLayer.texture,
-                blend: sceneLayer.blend
-            )
+            let draw = Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset)
 
             guard !sceneLayer.effects.isEmpty else {
                 batch.append(draw)
@@ -262,7 +374,7 @@ public final class SceneRenderer {
                 red: 0, green: 0, blue: 0, alpha: 0
             )
             if let encoder = buffer.makeRenderCommandEncoder(descriptor: isolatedPass) {
-                quads.encode(
+                encodeDraws(
                     [draw], into: encoder, projection: projection,
                     pixelFormat: isolated.texture.pixelFormat
                 )
@@ -278,10 +390,15 @@ public final class SceneRenderer {
             )
 
             // Composite the processed layer back, full-frame.
-            let composite = QuadDraw(
-                transform: Self.fullscreenTransform(projection: projection),
-                texture: processed.texture,
-                blend: .premultipliedAlpha
+            let composite = SceneDraw(
+                quad: QuadDraw(
+                    transform: Self.fullscreenTransform(projection: projection),
+                    texture: processed.texture,
+                    blend: .premultipliedAlpha
+                ),
+                // The layer's own shader already ran into the isolated target; compositing the
+                // result is a straight blit and must not run it a second time.
+                program: nil
             )
             drawBatch([composite], into: accumulator.texture, clearFirst: false)
 
@@ -298,7 +415,10 @@ public final class SceneRenderer {
             system.update(deltaTime: clock.delta)
             system.appendDraws(to: &particleDraws, cameraOffset: cameraOffset)
         }
-        drawBatch(particleDraws, into: accumulator.texture, clearFirst: false)
+        drawBatch(
+            particleDraws.map { SceneDraw(quad: $0, program: nil) },
+            into: accumulator.texture, clearFirst: false
+        )
 
         // Scene-wide chain straight into the drawable.
         post.apply(
@@ -448,18 +568,18 @@ extension SceneRenderer {
         )
 
         var draws = workingLayers.filter(\.isVisible).map { layer in
-            QuadDraw(
-                transform: layer.modelMatrix(cameraOffset: cameraOffset),
-                tint: layer.tint,
-                texture: layer.texture,
-                blend: layer.blend
-            )
+            Self.sceneDraw(for: layer, cameraOffset: cameraOffset)
         }
+        var particles: [QuadDraw] = []
         for system in scene.particles {
-            system.appendDraws(to: &draws, cameraOffset: cameraOffset)
+            system.appendDraws(to: &particles, cameraOffset: cameraOffset)
         }
+        draws.append(contentsOf: particles.map { SceneDraw(quad: $0, program: nil) })
 
-        quads.encode(draws, into: encoder, projection: projection, pixelFormat: .bgra8Unorm)
+        // The same dispatcher the live path uses. A harness that drew through a different
+        // pipeline would verify something the app never renders — which has already been a bug
+        // here once, when effects were skipped offscreen.
+        encodeDraws(draws, into: encoder, projection: projection, pixelFormat: .bgra8Unorm)
         encoder.endEncoding()
 
         if hasEffects, intermediate != nil {
