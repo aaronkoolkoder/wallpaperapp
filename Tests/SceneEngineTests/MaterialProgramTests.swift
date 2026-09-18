@@ -254,6 +254,69 @@ struct MaterialCompilerTests {
         #expect(compiler.compiledProgramCount == 1)
     }
 
+
+    @Test("The program cache is bounded")
+    func boundsProgramCount() throws {
+        // One compiler audits a whole library. Each program owns a Metal pipeline and a vertex
+        // buffer, so an unbounded cache over a few hundred Workshop items would balloon.
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let compiler = MaterialCompiler(
+            device: device, cache: ShaderCache(directory: nil), programLimit: 2
+        )
+
+        for index in 0 ..< 5 {
+            let assets = try makeWallpaper(
+                fragment: """
+                varying vec2 v_TexCoord;
+                uniform sampler2D g_Texture0;
+                void main() { gl_FragColor = vec4(\(index).0 * 0.1, 0.0, 0.0, 1.0); }
+                """,
+                extraFiles: ["common.h": Self.commonInclude]
+            )
+            _ = try compiler.program(for: MaterialPass(shader: "test"), assets: assets)
+        }
+
+        #expect(compiler.compiledProgramCount == 2)
+    }
+
+    @Test("A program still in use is not the one evicted")
+    func evictsLeastRecentlyUsed() throws {
+        // Evicting by insertion alone would drop the layer being drawn every frame in favour of
+        // one compiled once and never used again.
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let compiler = MaterialCompiler(
+            device: device, cache: ShaderCache(directory: nil), programLimit: 2
+        )
+
+        func wallpaper(_ index: Int) throws -> SceneAssets {
+            try makeWallpaper(
+                fragment: """
+                varying vec2 v_TexCoord;
+                uniform sampler2D g_Texture0;
+                void main() { gl_FragColor = vec4(\(index).0 * 0.1, 0.0, 0.0, 1.0); }
+                """,
+                extraFiles: ["common.h": Self.commonInclude]
+            )
+        }
+
+        let first = try wallpaper(0)
+        let second = try wallpaper(1)
+        let third = try wallpaper(2)
+        let pass = MaterialPass(shader: "test")
+
+        _ = try compiler.program(for: pass, assets: first)
+        _ = try compiler.program(for: pass, assets: second)
+        // Touch the first so it is the more recently used of the two.
+        _ = try compiler.program(for: pass, assets: first)
+        _ = try compiler.program(for: pass, assets: third)
+
+        #expect(compiler.compiledProgramCount == 2)
+        // Asking for the first again must be a hit, not a recompile.
+        let before = compiler.compiledProgramCount
+        _ = try compiler.program(for: pass, assets: first)
+        #expect(compiler.compiledProgramCount == before)
+    }
+
     @Test("A blend mode from the material reaches the pipeline")
     func honoursBlendMode() throws {
         let (compiler, _) = try compiler()

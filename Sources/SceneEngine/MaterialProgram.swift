@@ -104,14 +104,31 @@ public final class MaterialCompiler {
     /// pipeline — and a compiler shared across a library is exactly what auditing one wants.
     private var programs: [String: MaterialProgram] = [:]
 
+    /// Insertion order, for eviction. A plain array because the cap is small enough that the
+    /// scan costs less than maintaining a linked list would.
+    private var programOrder: [String] = []
+
+    /// How many compiled programs to hold.
+    ///
+    /// Each one owns a Metal pipeline and a vertex buffer. A single wallpaper needs a handful,
+    /// but one compiler audits a whole library — `wetool report` over a few hundred Workshop
+    /// items would otherwise accumulate thousands and balloon. Rebuilding an evicted one from
+    /// its already-translated MSL costs a few milliseconds, since the translation cache below
+    /// still has it.
+    public static let defaultProgramLimit = 256
+
+    private let programLimit: Int
+
     public init(
         device: any MTLDevice,
         backend: (any TranspilerBackend)? = nil,
-        cache: ShaderCache = ShaderCache()
+        cache: ShaderCache = ShaderCache(),
+        programLimit: Int = MaterialCompiler.defaultProgramLimit
     ) {
         self.device = device
         self.backend = backend ?? TranspilerBackendFactory.makeDefault()
         self.cache = cache
+        self.programLimit = max(1, programLimit)
     }
 
     /// True when shaders can actually be translated in this build.
@@ -143,7 +160,14 @@ public final class MaterialCompiler {
         let key = Self.cacheKey(
             vertex: vertex, fragment: fragment, pass: pass, pixelFormat: pixelFormat
         )
-        if let existing = programs[key] { return existing }
+        if let existing = programs[key] {
+            // Touched, so a program in active use is not the one evicted next.
+            if let position = programOrder.firstIndex(of: key) {
+                programOrder.remove(at: position)
+                programOrder.append(key)
+            }
+            return existing
+        }
 
         var diagnostics = vertex.diagnostics + fragment.diagnostics
 
@@ -202,8 +226,18 @@ public final class MaterialCompiler {
             vertexCount: geometry.count,
             diagnostics: diagnostics
         )
-        programs[key] = program
+        store(program, for: key)
         return program
+    }
+
+    private func store(_ program: MaterialProgram, for key: String) {
+        programs[key] = program
+        programOrder.append(key)
+
+        while programOrder.count > programLimit {
+            let oldest = programOrder.removeFirst()
+            programs.removeValue(forKey: oldest)
+        }
     }
 
     public var compiledProgramCount: Int { programs.count }
