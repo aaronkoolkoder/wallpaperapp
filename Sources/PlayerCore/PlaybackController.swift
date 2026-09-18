@@ -26,11 +26,48 @@ public final class PlaybackController {
     public var syncsDesktopPicture =
         ProcessInfo.processInfo.environment["DIORAMA_NO_DESKTOP_SYNC"] != "1"
 
+
+    /// The user's per-wallpaper settings, remembered across launches.
+    public let propertySettings: PropertySettingsStore
+
+    /// Change one of a wallpaper's settings, applying it to anything currently showing it.
+    ///
+    /// Takes effect on the next frame rather than restarting the wallpaper: restarting would
+    /// recompile its shaders and reload its textures to change one float, and would flash every
+    /// time a slider moved.
+    ///
+    /// - Parameter value: nil restores whatever the wallpaper's author shipped.
+    public func setProperty(_ value: DynamicValue?, named property: String, on wallpaperID: String) {
+        propertySettings.set(value, for: property, on: wallpaperID)
+        applyProperties(of: wallpaperID)
+    }
+
+    /// Restore every setting on a wallpaper to the author's values.
+    public func resetProperties(on wallpaperID: String) {
+        propertySettings.reset(wallpaperID)
+        applyProperties(of: wallpaperID)
+    }
+
+    /// Pushes the stored settings to every display showing that wallpaper.
+    ///
+    /// A wallpaper can be on more than one display at once, and changing a setting on one of
+    /// them and not the others would look like a bug rather than a feature.
+    private func applyProperties(of wallpaperID: String) {
+        let properties = propertySettings.properties(for: wallpaperID)
+        for (display, item) in assignments where item.id == wallpaperID {
+            backends[display]?.applyProperties(properties)
+        }
+    }
+
     /// Fired after a wallpaper starts or fails, carrying the compatibility verdict.
     public var onReport: ((CGDirectDisplayID, CompatibilityReport) -> Void)?
 
-    public init(coordinator: DisplayCoordinator) {
+    public init(
+        coordinator: DisplayCoordinator,
+        propertySettings: PropertySettingsStore = PropertySettingsStore()
+    ) {
         self.coordinator = coordinator
+        self.propertySettings = propertySettings
         // Before anything else: if a previous run died without restoring, give the user their
         // own wallpaper back rather than silently keeping ours.
         desktopPicture.reconcileAfterUngracefulExit()
@@ -83,7 +120,8 @@ public final class PlaybackController {
             id: item.id,
             kind: resolved.kind,
             contentURL: resolved.url,
-            baseURL: item.directory
+            baseURL: item.directory,
+            properties: propertySettings.properties(for: item.id)
         )
 
         surface.needsDisplayLink = type(of: backend).needsDisplayLink

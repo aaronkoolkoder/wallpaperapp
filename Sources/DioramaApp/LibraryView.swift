@@ -104,7 +104,20 @@ struct LibraryView: View {
                 onPlayOnDisplay: { displayID in
                     if let item = selectedItem { onPlayOnDisplay?(item, displayID) }
                 },
-                onAddToPlaylist: playlists == nil ? nil : { showingPlaylists = true }
+                onAddToPlaylist: playlists == nil ? nil : { showingPlaylists = true },
+                propertyOverrides: selectedItem.map {
+                    systemModel?.propertyOverrides(for: $0.id) ?? [:]
+                } ?? [:],
+                // Nil when there is no engine behind the UI, which is how the offscreen
+                // interface renderer gets the panel without live controls.
+                onSetProperty: systemModel == nil ? nil : { key, value in
+                    if let item = selectedItem {
+                        systemModel?.setProperty(value, named: key, on: item.id)
+                    }
+                },
+                onResetProperties: systemModel == nil ? nil : {
+                    if let item = selectedItem { systemModel?.resetProperties(on: item.id) }
+                }
             )
             .inspectorColumnWidth(min: 260, ideal: 300, max: 380)
         }

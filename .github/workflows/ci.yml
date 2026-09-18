@@ -7,11 +7,27 @@ on:
 
 jobs:
   test:
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_26.app || true
+      - name: Check the toolchain can build for macOS 26
+        # The runner image ships Xcode 26 as the default, so nothing needs selecting — but this
+        # verifies it rather than assuming. The previous version pointed xcode-select at
+        # /Applications/Xcode_26.app, which has never existed (the images name them Xcode_26.6
+        # and friends), and swallowed the failure with `|| true`. The build then ran against an
+        # older SDK and failed with a wall of unrelated Sendable errors, because MTLDevice only
+        # became Sendable in the macOS 26 SDK. Failing here says what is actually wrong.
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          swift --version
+          sdk=$(xcrun --sdk macosx --show-sdk-version)
+          echo "macOS SDK: $sdk"
+          if [ "${sdk%%.*}" -lt 26 ]; then
+            echo "::error::macOS SDK $sdk is too old. Package.swift targets macOS 26."
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
 
       - name: Cache vendored shader toolchain
         uses: actions/cache@v4

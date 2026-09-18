@@ -4,6 +4,7 @@ import LibraryKit
 import Observation
 import PlayerCore
 import SceneEngine
+import WEFormat
 import WallpaperKit
 
 /// A display as the UI needs to see it.
@@ -171,6 +172,36 @@ final class WallpaperSystemModel {
     }
 
     func item(withID id: String) -> WallpaperItem? { library.item(withID: id) }
+
+
+    // MARK: - Wallpaper settings
+
+    /// The user's changed settings, mirrored from the store so SwiftUI can observe them.
+    ///
+    /// The store itself is plain persistence and not observable; keeping a mirror here is what
+    /// lets a slider redraw without the model rebuilding its whole display snapshot, which
+    /// mid-drag would rewrite the entire UI.
+    private(set) var propertyOverridesByWallpaper: [String: [String: DynamicValue]] = [:]
+
+    /// Reads through to the store the first time a wallpaper is asked about, so settings saved
+    /// in an earlier session show up without loading the whole store at launch.
+    func propertyOverrides(for wallpaperID: String) -> [String: DynamicValue] {
+        if let known = propertyOverridesByWallpaper[wallpaperID] { return known }
+        return playback.propertySettings.properties(for: wallpaperID)
+    }
+
+    /// Change one setting. Takes effect on the next frame wherever the wallpaper is showing.
+    ///
+    /// - Parameter value: nil restores whatever the wallpaper's author shipped.
+    func setProperty(_ value: DynamicValue?, named key: String, on wallpaperID: String) {
+        playback.setProperty(value, named: key, on: wallpaperID)
+        propertyOverridesByWallpaper[wallpaperID] = playback.propertySettings.properties(for: wallpaperID)
+    }
+
+    func resetProperties(on wallpaperID: String) {
+        playback.resetProperties(on: wallpaperID)
+        propertyOverridesByWallpaper[wallpaperID] = [:]
+    }
 
     private var isPreview = false
 

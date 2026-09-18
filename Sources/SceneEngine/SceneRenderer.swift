@@ -48,6 +48,13 @@ public final class SceneRenderer {
     /// frame; the renderer itself never touches AppKit.
     public var pointer: SIMD2<Float> = .zero
 
+    /// The user's settings for this wallpaper, keyed as `project.json` keys them.
+    ///
+    /// Applied per draw rather than baked into the scene, so changing one takes effect on the
+    /// next frame. Rebuilding the scene for every tick of a slider would recompile shaders and
+    /// reload textures to change one float.
+    public var propertyOverrides: [String: DynamicValue] = [:]
+
     /// Latest analysed system audio. Silent unless the user has enabled audio reactivity.
     public var audio: AudioFrame = .silent
 
@@ -210,6 +217,7 @@ public final class SceneRenderer {
                     projection: projection,
                     textures: draw.textures,
                     constants: draw.constants,
+                    overrides: propertyOverrides,
                     engine: engineUniforms()
                 ),
                 into: encoder
@@ -276,7 +284,8 @@ public final class SceneRenderer {
             if case .compiled(let effect) = group[0], group.count == 1 {
                 let ran = effectRunner.run(
                     effect, source: current, destination: target,
-                    engine: engineUniforms(), commandBuffer: buffer, pool: pool
+                    overrides: propertyOverrides, engine: engineUniforms(),
+                    commandBuffer: buffer, pool: pool
                 )
                 if !ran {
                     post.apply(

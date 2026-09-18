@@ -94,12 +94,13 @@ public struct EngineUniforms: Sendable {
     }
 }
 
-/// Fills a shader's constant buffer from three sources, in order of precedence.
+/// Fills a shader's constant buffer from four sources, in order of precedence.
 ///
-/// The order is what makes a wallpaper look right: the engine's own values win, because a
-/// material cannot meaningfully override the projection matrix; then the material's baked
-/// constants; then the annotation's default. A uniform nothing supplies is left zeroed, which
-/// is the same thing an unbound OpenGL uniform would read.
+/// The order is what makes a wallpaper look right and do what the user asked. The engine's own
+/// values win, because a material cannot meaningfully override the projection matrix. Then the
+/// user's setting, because they changed it deliberately and just now. Then the material's baked
+/// constant, then the annotation's default. A uniform nothing supplies is left zeroed, which is
+/// the same thing an unbound OpenGL uniform would read.
 public enum UniformBufferWriter {
 
     /// What happened while filling a buffer, so the compatibility report can say which uniforms
@@ -114,12 +115,13 @@ public enum UniformBufferWriter {
         layout: UniformBlockLayout,
         declarations: [ShaderUniformDeclaration],
         constants: [String: DynamicValue] = [:],
+        overrides: [String: DynamicValue] = [:],
         engine: EngineUniforms
     ) -> Result {
         var bytes: [UInt8] = []
         let unsupplied = fill(
             into: &bytes, layout: layout, declarations: declarations,
-            constants: constants, engine: engine
+            constants: constants, overrides: overrides, engine: engine
         )
         return Result(bytes: bytes, unsuppliedEngineUniforms: unsupplied)
     }
@@ -131,11 +133,15 @@ public enum UniformBufferWriter {
     /// grows, and zeroed every call so a uniform nothing supplies does not inherit the last
     /// draw's value.
     @discardableResult
+    /// - Parameter overrides: the user's own settings, keyed as `project.json` keys them. A
+    ///   uniform's annotation names the property key it follows, which is what connects a
+    ///   slider labelled "Speed" to a uniform called `g_Speed`.
     public static func fill(
         into bytes: inout [UInt8],
         layout: UniformBlockLayout,
         declarations: [ShaderUniformDeclaration],
         constants: [String: DynamicValue] = [:],
+        overrides: [String: DynamicValue] = [:],
         engine: EngineUniforms
     ) -> [String] {
         if bytes.count < layout.size {
@@ -159,6 +165,15 @@ public enum UniformBufferWriter {
             // zeros and render something that looks broken rather than unsupported.
             if member.name.hasPrefix("g_"), declaration?.isUnannotated == true {
                 unsupplied.append(member.name)
+            }
+
+            // The property key first: that is what `project.json` names and what the settings
+            // UI edits. The uniform's own name is accepted too, since a wallpaper with no
+            // annotation on the uniform has no property key to match on.
+            if let override = declaration?.material.flatMap({ overrides[$0] })
+                ?? overrides[member.name] {
+                write(floats(of: override), into: &bytes, member: member)
+                continue
             }
 
             if let constant = constants[member.name]

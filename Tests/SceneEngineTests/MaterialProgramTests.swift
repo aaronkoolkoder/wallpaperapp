@@ -7,13 +7,10 @@ import WEFormat
 @testable import SceneEngine
 
 /// True when Scripts/vendor-shader-tools.sh has been run.
-private var toolchainAvailable: Bool {
-    !(TranspilerBackendFactory.makeDefault() is UnavailableTranspilerBackend)
-}
 
 @Suite(
     "MaterialCompiler",
-    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+    .enabled(if: gpuAndToolchainAvailable, "needs a GPU and the vendored shader toolchain")
 )
 struct MaterialCompilerTests {
 
@@ -270,7 +267,7 @@ struct MaterialCompilerTests {
 
 @Suite(
     "MaterialCompilerFactory",
-    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+    .enabled(if: gpuAndToolchainAvailable, "needs a GPU and the vendored shader toolchain")
 )
 struct MaterialCompilerFactoryTests {
 

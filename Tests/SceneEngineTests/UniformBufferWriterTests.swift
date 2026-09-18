@@ -253,4 +253,77 @@ struct UniformBufferWriterTests {
         #expect(floats(result, at: 0, count: 4) == [1, 2, 3, 4])
         #expect(floats(result, at: 16, count: 4) == [9, 9, 9, 9])
     }
+
+    @Test("A user setting beats the material's baked constant")
+    func overridesBeatConstants() {
+        // The user changed it deliberately and just now; the material's value is what the
+        // wallpaper's author baked in.
+        let declarations = [declaration("g_Tint", .vec4, material: "tint")]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            constants: ["tint": .string("1 1 1 1")],
+            overrides: ["tint": .string("0 1 0 1")],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 4) == [0, 1, 0, 1])
+    }
+
+    @Test("A user setting is matched by the property key the annotation names")
+    func overridesMatchMaterialKey() {
+        // `project.json` keys its properties by name, and a uniform's annotation names the key
+        // it follows. That connection is what lets a slider labelled Speed drive `g_Speed`.
+        let declarations = [declaration("g_Speed", .float, material: "speed")]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["speed": .number(0.25)],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 1) == [0.25])
+    }
+
+    @Test("A uniform with no annotation can still be set by its own name")
+    func overridesMatchUniformName() {
+        // A wallpaper whose uniform carries no annotation has no property key to match on.
+        let declarations = [declaration("g_Speed", .float)]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["g_Speed": .number(2)],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 1) == [2])
+    }
+
+    @Test("A user setting does not beat an engine value")
+    func engineBeatsOverrides() {
+        // There is no sensible user setting for the projection matrix, and honouring one would
+        // put the layer somewhere the scene never asked for.
+        let declarations = [declaration("g_Time", .float, unannotated: true)]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            overrides: ["g_Time": .number(99)],
+            engine: EngineUniforms(time: 3)
+        )
+        #expect(floats(result, at: 0, count: 1) == [3])
+    }
+
+    @Test("Clearing a setting falls back to the material, then the annotation")
+    func clearedOverrideFallsBack() {
+        let declarations = [
+            declaration("g_A", .float, material: "a", defaultValue: .scalar(1)),
+            declaration("g_B", .float, material: "b", defaultValue: .scalar(1)),
+        ]
+        let result = UniformBufferWriter.fill(
+            layout: UniformBlockLayout.std140(for: declarations),
+            declarations: declarations,
+            constants: ["a": .number(5)],
+            overrides: [:],
+            engine: EngineUniforms()
+        )
+        #expect(floats(result, at: 0, count: 1) == [5])
+        #expect(floats(result, at: 4, count: 1) == [1])
+    }
 }

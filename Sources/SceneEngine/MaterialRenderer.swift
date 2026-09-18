@@ -77,6 +77,8 @@ public final class MaterialRenderer {
         /// Sampler name to the texture it should read, e.g. `g_Texture0`.
         public var textures: [String: any MTLTexture]
         public var constants: [String: DynamicValue]
+        /// The user's own settings for this wallpaper, keyed as `project.json` keys them.
+        public var overrides: [String: DynamicValue]
         public var engine: EngineUniforms
         public var wrapsUVs: Bool
 
@@ -85,6 +87,7 @@ public final class MaterialRenderer {
             projection: simd_float4x4,
             textures: [String: any MTLTexture] = [:],
             constants: [String: DynamicValue] = [:],
+            overrides: [String: DynamicValue] = [:],
             engine: EngineUniforms = EngineUniforms(),
             wrapsUVs: Bool = false
         ) {
@@ -92,6 +95,7 @@ public final class MaterialRenderer {
             self.projection = projection
             self.textures = textures
             self.constants = constants
+            self.overrides = overrides
             self.engine = engine
             self.wrapsUVs = wrapsUVs
         }
@@ -120,6 +124,7 @@ public final class MaterialRenderer {
                 layout: program.vertexLayout,
                 declarations: program.vertexUniforms,
                 constants: context.constants,
+                overrides: context.overrides,
                 engine: engine
             )
             bind(
@@ -134,6 +139,7 @@ public final class MaterialRenderer {
                 layout: program.fragmentLayout,
                 declarations: program.fragmentUniforms,
                 constants: context.constants,
+                overrides: context.overrides,
                 engine: engine
             )
             bind(

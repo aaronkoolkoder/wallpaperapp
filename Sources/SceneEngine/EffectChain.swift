@@ -97,6 +97,7 @@ public final class EffectChainRunner {
         _ effect: CompiledEffect,
         source: any MTLTexture,
         destination: any MTLTexture,
+        overrides: [String: DynamicValue] = [:],
         engine: EngineUniforms,
         commandBuffer: any MTLCommandBuffer,
         pool: FBOPool
@@ -171,6 +172,7 @@ public final class EffectChainRunner {
                     projection: matrix_identity_float4x4,
                     textures: textures,
                     constants: pass.constants,
+                    overrides: overrides,
                     engine: passEngine
                 ),
                 into: encoder

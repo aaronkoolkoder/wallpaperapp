@@ -7,15 +7,12 @@ import Testing
 import WEFormat
 @testable import SceneEngine
 
-private var toolchainAvailable: Bool {
-    !(TranspilerBackendFactory.makeDefault() is UnavailableTranspilerBackend)
-}
 
 /// Renders a wallpaper whose effect has its own shaders, and checks the author's passes ran
 /// rather than a built-in approximation of them.
 @Suite(
     "Effect chain",
-    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+    .enabled(if: gpuAndToolchainAvailable, "needs a GPU and the vendored shader toolchain")
 )
 struct EffectChainTests {
 

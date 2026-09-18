@@ -19,6 +19,13 @@ struct InspectorPanel: View {
     var onPlayOnDisplay: ((CGDirectDisplayID) -> Void)?
     var onAddToPlaylist: (() -> Void)?
 
+    /// The user's changed settings for this wallpaper, keyed as `project.json` keys them.
+    /// Passed in as a value rather than read from the model so the panel stays a pure view.
+    var propertyOverrides: [String: DynamicValue] = [:]
+    /// nil as the value restores the wallpaper's own.
+    var onSetProperty: ((String, DynamicValue?) -> Void)?
+    var onResetProperties: (() -> Void)?
+
     var body: some View {
         Group {
             if let item {
@@ -206,23 +213,55 @@ struct InspectorPanel: View {
 
     /// The wallpaper's own user-configurable settings.
     ///
-    /// Shown read-only for now: the values parse and display, but editing them has to write back
-    /// through to the running scene's uniforms, which is not wired up. Listing them as live
-    /// controls that silently did nothing would be worse than showing them as information.
+    /// Live: editing writes through to the running scene's uniforms on the next frame. A
+    /// wallpaper that is not playing still records the change, so it applies the moment it is
+    /// set. Offscreen interface rendering shows them read-only — the controls do not render.
     private func properties(for item: WallpaperItem) -> some View {
-        VStack(alignment: .leading, spacing: 7) {
-            SectionLabel("Wallpaper Settings")
+        let keys = item.properties.keys.sorted { left, right in
+            // The author's declared order first, falling back to the key so the list is stable
+            // for wallpapers that declare none.
+            let leftOrder = item.properties[left]?.order ?? Int.max
+            let rightOrder = item.properties[right]?.order ?? Int.max
+            return leftOrder == rightOrder ? left < right : leftOrder < rightOrder
+        }
+
+        return VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                SectionLabel("Wallpaper Settings")
+                Spacer()
+                if !propertyOverrides.isEmpty, onResetProperties != nil {
+                    Button("Reset All") { onResetProperties?() }
+                        .buttonStyle(.plain)
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                }
+            }
+
             VStack(spacing: 0) {
-                ForEach(item.properties.sorted(by: { $0.key < $1.key }), id: \.key) { key, property in
-                    PropertyRow(name: property.text ?? key, property: property)
-                    if key != item.properties.keys.sorted().last { Divider().opacity(0.4) }
+                ForEach(keys, id: \.self) { key in
+                    if let property = item.properties[key] {
+                        PropertyRow(
+                            name: property.text ?? key,
+                            key: key,
+                            property: property,
+                            wallpaperID: item.id,
+                            value: propertyOverrides[key] ?? property.value,
+                            isCustomised: propertyOverrides[key] != nil,
+                            isEditable: !isOffscreenRendering && onSetProperty != nil,
+                            onChange: { onSetProperty?(key, $0) }
+                        )
+                        if key != keys.last { Divider().opacity(0.4) }
+                    }
                 }
             }
             .raisedSurface(radius: Design.Radius.control, fill: Design.Surface.inset)
 
-            Text("Editing these is not wired up yet.")
+            // The binding is by property key, and a wallpaper whose shader uniforms carry no
+            // annotation has no key to bind to. Saying so beats a control that does nothing.
+            Text("Changes apply immediately. Settings a wallpaper does not bind to a shader have no visible effect.")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -273,27 +312,159 @@ private struct DetailRow: View {
     }
 }
 
+/// One of a wallpaper's settings, as a live control.
+///
+/// Editing writes through to the running scene's uniforms on the next frame. A wallpaper that is
+/// not currently playing still records the change, so it takes effect the moment it is set.
 private struct PropertyRow: View {
     let name: String
+    let key: String
     let property: WEProperty
+    let wallpaperID: String
+    let value: DynamicValue?
+    let isCustomised: Bool
+    let isEditable: Bool
+    let onChange: (DynamicValue?) -> Void
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline) {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
             Text(name)
                 .font(.caption)
                 .lineLimit(1)
-            Spacer(minLength: 10)
+                .layoutPriority(1)
+
+            Spacer(minLength: 6)
+
+            if isEditable {
+                control
+                    .controlSize(.small)
+                    .labelsHidden()
+                    .frame(maxWidth: 148, alignment: .trailing)
+            } else {
+                // A control that silently did nothing would be worse than showing the value.
+                Text(valueDescription)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            // Only shown once something has actually been changed, so the row stays quiet until
+            // there is something to undo.
+            Button {
+                onChange(nil)
+            } label: {
+                Image(systemName: "arrow.uturn.backward")
+                    .font(.system(size: 9, weight: .semibold))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Restore the wallpaper's own value")
+            .opacity(isCustomised ? 1 : 0)
+            .disabled(!isCustomised)
+            .accessibilityHidden(!isCustomised)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var control: some View {
+        switch property.type {
+        case .bool:
+            Toggle("", isOn: Binding(
+                get: { value?.boolValue ?? false },
+                set: { onChange(.bool($0)) }
+            ))
+            .toggleStyle(.switch)
+
+        case .slider:
+            sliderControl
+
+        case .color:
+            ColorPicker("", selection: Binding(
+                get: { colorValue },
+                set: { onChange(Self.dynamicValue(from: $0)) }
+            ), supportsOpacity: false)
+
+        case .combo:
+            Picker("", selection: Binding(
+                get: { comboSelection },
+                set: { onChange(.number(Double($0))) }
+            )) {
+                ForEach(Array((property.options ?? []).enumerated()), id: \.offset) { index, option in
+                    Text(option.label ?? "Option \(index + 1)")
+                        .tag(Self.intValue(of: option.value) ?? index)
+                }
+            }
+            .pickerStyle(.menu)
+
+        case .text, .file, .unknown:
             Text(valueDescription)
                 .font(.caption.weight(.medium))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
+    }
+
+    /// Split out of `control`: as one expression inside the switch the type checker gives up.
+    private var sliderControl: some View {
+        let current = value?.doubleValue ?? property.min ?? 0
+        let binding = Binding<Double>(
+            get: { current },
+            set: { onChange(.number(rounded($0))) }
+        )
+        return HStack(spacing: 6) {
+            Slider(value: binding, in: sliderRange)
+                .frame(width: 96)
+            Text(String(format: "%.2f", current))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
+        }
+    }
+
+    /// Wallpaper Engine sliders declare their own bounds; a malformed or absent pair would make
+    /// SwiftUI's Slider trap, so an empty or inverted range is replaced rather than passed on.
+    private var sliderRange: ClosedRange<Double> {
+        let low = property.min ?? 0
+        let high = property.max ?? 1
+        guard low.isFinite, high.isFinite, high > low else { return 0...1 }
+        return low...high
+    }
+
+    private func rounded(_ raw: Double) -> Double {
+        guard let step = property.step, step > 0 else { return raw }
+        let low = sliderRange.lowerBound
+        return low + ((raw - low) / step).rounded() * step
+    }
+
+    private var comboSelection: Int {
+        if let current = Self.intValue(of: value) { return current }
+        return Self.intValue(of: property.options?.first?.value) ?? 0
+    }
+
+    /// Combo values arrive as numbers or as numeric strings depending on the wallpaper.
+    static func intValue(of value: DynamicValue?) -> Int? {
+        guard let raw = value?.doubleValue, raw.isFinite else { return nil }
+        return Int(raw.rounded())
+    }
+
+    private var colorValue: Color {
+        let components = DioramaColour.components(of: value)
+        return Color(.sRGB, red: components.0, green: components.1, blue: components.2)
+    }
+
+    /// Wallpaper Engine writes colours as `"r g b"` in 0–1, which is also what a shader wants.
+    static func dynamicValue(from color: Color) -> DynamicValue {
+        let resolved = NSColor(color).usingColorSpace(.sRGB) ?? .white
+        return .string(String(
+            format: "%.4f %.4f %.4f",
+            resolved.redComponent, resolved.greenComponent, resolved.blueComponent
+        ))
     }
 
     private var valueDescription: String {
-        switch property.value {
+        switch value {
         case .bool(let flag): flag ? "On" : "Off"
         case .number(let number):
             number == number.rounded()
@@ -305,6 +476,26 @@ private struct PropertyRow: View {
         case .null, .none: "—"
         }
     }
+}
+
+/// Reads a Wallpaper Engine colour value into components.
+enum DioramaColour {
+    static func components(of value: DynamicValue?) -> (Double, Double, Double) {
+        switch value {
+        case .vector3(let vector):
+            return (clamp(vector.x), clamp(vector.y), clamp(vector.z))
+        case .string(let text):
+            let parts = text.split(whereSeparator: { $0 == " " || $0 == "," }).compactMap(Double.init)
+            guard parts.count >= 3 else { return (1, 1, 1) }
+            return (clamp(parts[0]), clamp(parts[1]), clamp(parts[2]))
+        case .number(let grey):
+            return (clamp(grey), clamp(grey), clamp(grey))
+        default:
+            return (1, 1, 1)
+        }
+    }
+
+    private static func clamp(_ value: Double) -> Double { min(1, max(0, value)) }
 }
 
 /// Wrapping row layout for tags. `LazyVGrid` cannot do intrinsic-width wrapping, and a chip row

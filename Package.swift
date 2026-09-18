@@ -80,11 +80,11 @@ let package = Package(
 
         .target(name: "SceneEngine", dependencies: ["WEFormat", "MetalRenderer", "ShaderTranspiler", "Diagnostics"]),
 
-        .target(name: "PlayerCore", dependencies: ["WallpaperKit", "SceneEngine", "LibraryKit", "Diagnostics"]),
+        .target(name: "PlayerCore", dependencies: ["WallpaperKit", "SceneEngine", "LibraryKit", "WEFormat", "Diagnostics"]),
 
         .executableTarget(
             name: "DioramaApp",
-            dependencies: ["PlayerCore", "WallpaperKit", "LibraryKit", "SceneEngine", "Diagnostics"]
+            dependencies: ["PlayerCore", "WallpaperKit", "LibraryKit", "SceneEngine", "WEFormat", "Diagnostics"]
         ),
 
         .executableTarget(name: "wetool", dependencies: ["WEFormat", "ShaderTranspiler", "LibraryKit", "SceneEngine", "MetalRenderer"]),
@@ -94,6 +94,7 @@ let package = Package(
         .testTarget(name: "SceneEngineTests", dependencies: ["SceneEngine"]),
         .testTarget(name: "WallpaperKitTests", dependencies: ["WallpaperKit"]),
         .testTarget(name: "LibraryKitTests", dependencies: ["LibraryKit"]),
+        .testTarget(name: "PlayerCoreTests", dependencies: ["PlayerCore", "WEFormat"]),
         .testTarget(name: "MetalRendererTests", dependencies: ["MetalRenderer"]),
     ],
     cxxLanguageStandard: .cxx17

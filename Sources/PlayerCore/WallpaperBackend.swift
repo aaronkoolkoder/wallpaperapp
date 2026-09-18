@@ -1,6 +1,7 @@
 import AppKit
 import Diagnostics
 import Foundation
+import WEFormat
 import WallpaperKit
 
 /// What kind of content a backend plays.
@@ -42,10 +43,17 @@ public struct WallpaperRequest: Sendable {
     /// Wallpapers are silent by default — a background image that makes noise is a bug, not a
     /// feature, and this is the single most common complaint about live wallpaper apps.
     public let isMuted: Bool
+    /// The user's settings for this wallpaper, keyed as `project.json` keys them.
+    ///
+    /// Empty means "as the author shipped it". A wallpaper's own defaults live in its manifest
+    /// and its shaders; only values the user has actually changed travel here, so a setting the
+    /// author later changes is picked up rather than pinned to whatever it was on first run.
+    public let properties: [String: DynamicValue]
 
     public init(
         id: String, kind: WallpaperKind, contentURL: URL, baseURL: URL,
-        loops: Bool = true, isMuted: Bool = true
+        loops: Bool = true, isMuted: Bool = true,
+        properties: [String: DynamicValue] = [:]
     ) {
         self.id = id
         self.kind = kind
@@ -53,6 +61,7 @@ public struct WallpaperRequest: Sendable {
         self.baseURL = baseURL
         self.loops = loops
         self.isMuted = isMuted
+        self.properties = properties
     }
 }
 
@@ -87,6 +96,19 @@ public protocol WallpaperBackend: AnyObject {
 
     /// Suspend or resume without tearing down. Called when the power policy flips.
     func setPaused(_ paused: Bool)
+
+    /// Apply the user's settings to content that is already playing.
+    ///
+    /// Separate from `start` so changing one takes effect on the next frame. Restarting the
+    /// wallpaper would recompile its shaders and reload its textures to change one float, and
+    /// would be visible as a flash every time a slider moved.
+    func applyProperties(_ properties: [String: DynamicValue])
+}
+
+public extension WallpaperBackend {
+    /// Most kinds have nothing a `project.json` property can change: a video plays, a web page
+    /// runs its own code, an image is an image. Only scenes read them.
+    func applyProperties(_ properties: [String: DynamicValue]) {}
 }
 
 public enum BackendError: Error, LocalizedError {

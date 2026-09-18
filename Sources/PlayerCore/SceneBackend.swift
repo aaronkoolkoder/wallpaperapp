@@ -5,6 +5,7 @@ import Metal
 import MetalRenderer
 import QuartzCore
 import SceneEngine
+import WEFormat
 import WallpaperKit
 import os
 
@@ -51,6 +52,7 @@ public final class SceneBackend: WallpaperBackend {
             materials: materialCompilers.makeCompiler(device: renderDevice.device)
         )
         renderer.setScene(scene)
+        renderer.propertyOverrides = request.properties
 
         // Carry the build-time findings forward: which objects we skipped and why is exactly
         // what the user needs to see in the compatibility panel.
@@ -93,6 +95,10 @@ public final class SceneBackend: WallpaperBackend {
 
     public func setPaused(_ paused: Bool) {
         isPaused = paused
+    }
+
+    public func applyProperties(_ properties: [String: DynamicValue]) {
+        renderer?.propertyOverrides = properties
     }
 
     /// Pointer position normalised to [-1, 1] about the screen centre.

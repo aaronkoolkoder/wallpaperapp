@@ -7,15 +7,12 @@ import Testing
 import WEFormat
 @testable import SceneEngine
 
-private var toolchainAvailable: Bool {
-    !(TranspilerBackendFactory.makeDefault() is UnavailableTranspilerBackend)
-}
 
 /// Renders a scene end to end and checks that the material's own shader is what produced the
 /// pixels — not the built-in quad shader it used to fall back to.
 @Suite(
     "Material render path",
-    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+    .enabled(if: gpuAndToolchainAvailable, "needs a GPU and the vendored shader toolchain")
 )
 struct MaterialRenderPathTests {
 
@@ -174,5 +171,49 @@ struct MaterialRenderPathTests {
 
         let pixel = try #require(try renderCentrePixel(root: root))
         #expect(pixel.g < 60)
+    }
+
+    @Test("A user setting reaches the shader on the next frame")
+    func propertyOverrideChangesThePixels() throws {
+        // The whole chain: a project.json property key, the annotation on the uniform that names
+        // it, the override dictionary, the constant buffer, and the shader that reads it. The
+        // wallpaper's own default is blue; the user's setting is green.
+        let fragment = #"""
+        varying vec2 v_TexCoord;
+        uniform sampler2D g_Texture0;
+        uniform vec4 g_Tint; // {"material":"tint","default":"0 0 1 1","type":"color"}
+        void main() { gl_FragColor = g_Tint; }
+        """#
+        let root = try makeWallpaper(fragment: fragment)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let renderer = try SceneRenderer(renderDevice: try RenderDevice(device: device))
+        let scene = try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "marker", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        )
+        renderer.setScene(scene)
+
+        func centre() throws -> (r: UInt8, g: UInt8, b: UInt8) {
+            let image = try #require(renderer.renderOffscreen(width: 32, height: 32))
+            let data = try #require(image.dataProvider?.data as Data?)
+            let middle = (16 * image.bytesPerRow) + 16 * 4
+            return (data[middle + 2], data[middle + 1], data[middle])
+        }
+
+        let authored = try centre()
+        #expect(authored.b > 200)
+
+        // Applied without rebuilding the scene: changing a setting must not recompile shaders
+        // or reload textures, or every tick of a slider would flash.
+        renderer.propertyOverrides = ["tint": .string("0 1 0 1")]
+        let overridden = try centre()
+        #expect(overridden.g > 200)
+        #expect(overridden.b < 60)
+
+        // And clearing it puts the author's value back rather than leaving the last one.
+        renderer.propertyOverrides = [:]
+        #expect(try centre().b > 200)
     }
 }
