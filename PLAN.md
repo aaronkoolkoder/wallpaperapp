@@ -252,6 +252,10 @@ the territory and a reference for *what the format does*.
 - **Properties** (`general.properties` in `project.json`) are the per-wallpaper user-configurable settings —
   sliders, colors, booleans, combos — bound to shader uniforms. Surfacing these properly in a native settings UI is
   a differentiator; the reference app's users lose them entirely when scenes get recorded to video.
+  The binding is by key: a uniform's trailing annotation names the property it follows (`{"material":"speed"}` on
+  `uniform float g_Speed`), which is what connects a slider to a shader without anything being mapped by hand. A
+  uniform carrying no annotation has no key to bind to, and the settings panel says so rather than offering a
+  control that does nothing.
 
 ### 5.3 Render graph
 

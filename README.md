@@ -11,8 +11,9 @@ no account, no server, no network.
 Early. Video, web, image **and Scene** wallpapers play — scenes render natively in Metal from
 their `.pkg`. Camera parallax, particle systems, post-processing chains (bloom, blur, vignette, chromatic
 aberration, sharpen, pixelate) and SceneScript all work. Text layers render, with font fallback when a
-wallpaper names a Windows font. Effects are matched by name rather than by running their own
-shaders; anything unmatched is reported by name. See [PLAN.md](PLAN.md) for the full build plan,
+wallpaper names a Windows font. Materials and effects run their own shaders, translated from
+GLSL to Metal at import; anything that will not translate falls back to a built-in approximation
+and is reported by name rather than silently flattened. See [PLAN.md](PLAN.md) for the full build plan,
 binary format specs, milestones, and licensing constraints.
 
 | Milestone | State |
@@ -26,9 +27,9 @@ binary format specs, milestones, and licensing constraints.
 | M5b — effect chains (bloom, blur, vignette…) | ✅ Done |
 | M6 — SceneScript, text layers | ✅ Done |
 | M7 — playlists, per-display, audio reactivity | ✅ Done |
+| M7b — GLSL → Metal, real material and effect shaders | ✅ Done |
+| M7c — per-wallpaper settings, live | ✅ Done |
 | M8 — signing, notarization, release | ⬜ Next |
-| M6 — SceneScript | ⬜ |
-| M7 — properties, audio, playlists | ⬜ |
 
 ## Measured performance
 
