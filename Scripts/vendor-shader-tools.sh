@@ -93,6 +93,12 @@ cp -R "$PREFIX/include/spirv_cross" "$STAGED/spirv_cross"
 cp "$PREFIX/include/spirv_cross/"*.hpp "$STAGED/" 2>/dev/null || true
 cp "$PREFIX/include/spirv_cross/"*.h "$STAGED/" 2>/dev/null || true
 
+# Package.swift only names the toolchain's libraries when it can see them, so that a clone
+# without this step still links. SwiftPM caches the evaluated manifest and keys that cache on
+# the file's modification time, so without this touch the build would keep the answer it
+# computed before the libraries existed.
+touch "$ROOT/Package.swift"
+
 echo
 echo "installed to $PREFIX"
 ls "$PREFIX/lib" 2>/dev/null | sed 's/^/  /' | head -20

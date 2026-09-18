@@ -12,6 +12,29 @@ let vendorLibraryPath = URL(fileURLWithPath: #filePath)
     .appendingPathComponent("Vendor/install/lib")
     .path
 
+// Only link the toolchain when it has actually been built.
+//
+// `ShaderBridge.cpp` already compiles to a stub when the headers are missing, but that only
+// fixes the compile step: naming the libraries unconditionally still fails the link on a fresh
+// clone with `ld: library 'glslang' not found`. The manifest is ordinary Swift, so it can check.
+//
+// Scripts/vendor-shader-tools.sh touches this file when it finishes, because SwiftPM caches the
+// evaluated manifest and would otherwise keep the "absent" answer after the libraries appear.
+let vendoredToolchainIsBuilt = FileManager.default.fileExists(
+    atPath: vendorLibraryPath + "/libglslang.a"
+)
+
+let shaderToolchainLinkerSettings: [LinkerSetting] = vendoredToolchainIsBuilt
+    ? [
+        .unsafeFlags([
+            "-L\(vendorLibraryPath)",
+            "-lglslang", "-lMachineIndependent", "-lGenericCodeGen",
+            "-lOSDependent", "-lSPIRV", "-lglslang-default-resource-limits",
+            "-lspirv-cross-core", "-lspirv-cross-glsl", "-lspirv-cross-msl",
+        ], .when(platforms: [.macOS])),
+    ]
+    : []
+
 let package = Package(
     name: "Diorama",
     platforms: [.macOS("26.0")],
@@ -38,14 +61,7 @@ let package = Package(
                 // referenced where they were built.
                 .headerSearchPath("vendor"),
             ],
-            linkerSettings: [
-                .unsafeFlags([
-                    "-L\(vendorLibraryPath)",
-                    "-lglslang", "-lMachineIndependent", "-lGenericCodeGen",
-                    "-lOSDependent", "-lSPIRV", "-lglslang-default-resource-limits",
-                    "-lspirv-cross-core", "-lspirv-cross-glsl", "-lspirv-cross-msl",
-                ], .when(platforms: [.macOS])),
-            ]
+            linkerSettings: shaderToolchainLinkerSettings
         ),
 
         // Leaf: WE GLSL -> MSL.
