@@ -2,6 +2,7 @@ import Diagnostics
 import Foundation
 import Metal
 import MetalRenderer
+import ShaderTranspiler
 import WEFormat
 import simd
 import os
@@ -497,6 +498,17 @@ public struct SceneBuilder {
         return layer
     }
 
+    /// A shader finding as one line, without repeating what the report already shows.
+    ///
+    /// `ShaderDiagnostic.description` leads with the severity and trails with the kind, both of
+    /// which the surrounding report carries already.
+    static func summary(of diagnostic: ShaderDiagnostic) -> String {
+        let location = diagnostic.line.map { line in
+            "\(diagnostic.originFile ?? diagnostic.shaderName):\(line): "
+        } ?? ""
+        return ShaderMessageText.oneLine(location + diagnostic.message)
+    }
+
     /// Compiles a pass's shader and resolves the textures it samples.
     ///
     /// Returns nil — and reports why — whenever the layer should fall back to the built-in quad
@@ -518,6 +530,16 @@ public struct SceneBuilder {
         do {
             program = try materials.program(for: pass, assets: assets)
         } catch {
+            // The preprocessor's own findings first: they usually name the line the author
+            // wrote, where the backend names a rule the author never wrote against.
+            if let failure = error as? MaterialProgramError {
+                for diagnostic in failure.diagnostics where diagnostic.severity != .info {
+                    report.add(
+                        .degraded, feature: "Shader",
+                        detail: "\(shader): \(Self.summary(of: diagnostic))"
+                    )
+                }
+            }
             report.add(
                 .degraded, feature: "Shader",
                 detail: "\(shader): \(ShaderMessageText.oneLine(error.localizedDescription)) — drawn without it"
@@ -526,9 +548,14 @@ public struct SceneBuilder {
         }
 
         for diagnostic in program.diagnostics where diagnostic.severity != .info {
+            // Always degraded at the wallpaper level, whatever the shader-level severity. A
+            // shader that will not compile is unsupported *as a shader*, but the layer still
+            // draws through the built-in one with its own textures — the wallpaper looks like
+            // itself, flatter. Reserving `unsupported` for "nothing renders" is what keeps that
+            // word meaning something in the report.
             report.add(
-                diagnostic.severity == .unsupported ? .unsupported : .degraded,
-                feature: "Shader", detail: "\(shader): \(ShaderMessageText.oneLine(diagnostic.message))"
+                .degraded, feature: "Shader",
+                detail: "\(shader): \(Self.summary(of: diagnostic))"
             )
         }
 

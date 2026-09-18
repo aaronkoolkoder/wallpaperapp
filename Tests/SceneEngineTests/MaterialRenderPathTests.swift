@@ -216,4 +216,138 @@ struct MaterialRenderPathTests {
         renderer.propertyOverrides = [:]
         #expect(try centre().b > 200)
     }
+
+    @Test("A uniform block larger than Metal's inline limit still binds")
+    func largeUniformBlockBinds() throws {
+        // Metal's setBytes fast path stops at 4KB; past that the data has to go in a buffer, and
+        // that branch had never been exercised. The colour comes from a uniform sitting past
+        // 4800 bytes, so it is only right if the whole block was uploaded rather than truncated.
+        let fragment = #"""
+        varying vec2 v_TexCoord;
+        uniform sampler2D g_Texture0;
+        uniform float g_Weights[300];
+        uniform vec4 g_Tint; // {"material":"tint","default":"0 1 0 1","type":"color"}
+        void main() { gl_FragColor = g_Tint + vec4(g_Weights[299] * 0.0); }
+        """#
+        let root = try makeWallpaper(fragment: fragment)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let renderer = try SceneRenderer(renderDevice: try RenderDevice(device: device))
+        let scene = try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "big", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        )
+        // The block must genuinely exceed the inline limit or this tests the wrong branch.
+        let layout = try #require(scene.layers.first?.program?.fragmentLayout)
+        #expect(layout.size > MaterialRenderer.inlineByteLimit)
+
+        renderer.setScene(scene)
+        let image = try #require(renderer.renderOffscreen(width: 32, height: 32))
+        let data = try #require(image.dataProvider?.data as Data?)
+        let middle = (16 * image.bytesPerRow) + 16 * 4
+
+        #expect(data[middle + 1] > 200, "green from a uniform past the inline limit was lost")
+        #expect(data[middle + 2] < 60)
+    }
+
+    @Test("A large block survives a second frame on the reused buffer")
+    func largeBlockReusesBuffer() throws {
+        // The scratch buffer is kept per program so a shader with big uniform arrays does not
+        // allocate one per draw. Reuse is where a stale or wrongly-sized buffer would show up.
+        let fragment = #"""
+        varying vec2 v_TexCoord;
+        uniform sampler2D g_Texture0;
+        uniform float g_Weights[300];
+        uniform vec4 g_Tint; // {"material":"tint","default":"0 0 1 1","type":"color"}
+        void main() { gl_FragColor = g_Tint + vec4(g_Weights[299] * 0.0); }
+        """#
+        let root = try makeWallpaper(fragment: fragment)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let renderer = try SceneRenderer(renderDevice: try RenderDevice(device: device))
+        renderer.setScene(try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "big", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        ))
+
+        func blueAtCentre() throws -> UInt8 {
+            let image = try #require(renderer.renderOffscreen(width: 32, height: 32))
+            let data = try #require(image.dataProvider?.data as Data?)
+            return data[(16 * image.bytesPerRow) + 16 * 4]
+        }
+
+        #expect(try blueAtCentre() > 200)
+        renderer.propertyOverrides = ["tint": .string("0 1 0")]
+        #expect(try blueAtCentre() < 60, "an override did not reach the reused buffer")
+        renderer.propertyOverrides = [:]
+        #expect(try blueAtCentre() > 200, "the buffer kept the previous frame's value")
+    }
+
+    @Test("A shader failure reports why, not just what the backend said")
+    func failureCarriesPreprocessorFindings() throws {
+        // glslang answers an unreadable uniform declaration with "non-opaque uniforms outside a
+        // block", which describes a rule the author never wrote against. The preprocessor
+        // already knows it could not read the declaration, and that is the actionable half.
+        let root = try makeWallpaper(fragment: """
+        uniform vec4 g_Missing
+        varying vec2 v_TexCoord;
+        void main() { gl_FragColor = g_Missing; }
+        """)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let scene = try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "broken", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        )
+
+        let details = scene.report.findings.compactMap(\.detail)
+        #expect(details.contains { $0.contains("Could not read this uniform declaration") })
+    }
+
+    @Test("A wallpaper whose shader fails is degraded, not unsupported")
+    func shaderFailureIsDegraded() throws {
+        // The layer still draws through the built-in shader with its own textures, so the
+        // wallpaper looks like itself, flatter. Reserving `unsupported` for "nothing renders"
+        // is what keeps the word meaning something in a library-wide report.
+        let root = try makeWallpaper(fragment: "void main() { notAFunction(); }")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let scene = try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "broken", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        )
+
+        #expect(scene.report.level != .unsupported)
+        #expect(!scene.layers.isEmpty)
+    }
+
+    @Test("A backend error names the author's line, not the emitted one")
+    func backendErrorsUseAuthorLines() throws {
+        // Three blank lines above the error, so the emitted line number (shifted by the
+        // prologue) and the author's cannot coincide by accident.
+        let root = try makeWallpaper(fragment: """
+
+
+        varying vec2 v_TexCoord;
+        void main() { notAFunction(); }
+        """)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let scene = try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "broken", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        )
+
+        let shaderFindings = scene.report.findings.filter { $0.feature == "Shader" }
+        #expect(!shaderFindings.isEmpty)
+        // The offending line is 4 in the file the author wrote. Without the remap this would
+        // name a line in the emitted GLSL, which is shifted by the prologue and has flattened
+        // every include into one buffer — a line nobody can open.
+        #expect(shaderFindings.contains { $0.detail?.contains("marker.frag:4") == true })
+    }
 }

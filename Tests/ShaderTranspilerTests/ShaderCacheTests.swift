@@ -219,3 +219,106 @@ private struct SwappedCanaryBackend: TranspilerBackend {
         )
     }
 }
+
+@Suite("ShaderCache under concurrency")
+struct ShaderCacheConcurrencyTests {
+
+    /// Counts compiles across threads, so the test can tell a hit from a recompile safely.
+    private final class ThreadSafeBackend: TranspilerBackend, @unchecked Sendable {
+        private let lock = NSLock()
+        private var count = 0
+
+        var compileCount: Int {
+            lock.lock(); defer { lock.unlock() }
+            return count
+        }
+
+        func compile(glsl: String, stage: ShaderStage) throws -> TranspiledShader {
+            if glsl == ShaderCache.canary {
+                return TranspiledShader(msl: "// canary", reflection: ShaderReflection(entryPoint: "main0"))
+            }
+            lock.lock()
+            count += 1
+            lock.unlock()
+            // Long enough that concurrent callers genuinely overlap rather than serialising by
+            // luck of scheduling.
+            Thread.sleep(forTimeInterval: 0.002)
+            return TranspiledShader(
+                msl: "// \(glsl.count)", reflection: ShaderReflection(entryPoint: "main0")
+            )
+        }
+    }
+
+    private func shader(_ index: Int) throws -> PreprocessedShader {
+        try ShaderPreprocessor().preprocess(
+            ShaderSource(
+                name: "s\(index).frag", stage: .fragment,
+                text: "void main() { float x = \(index).0; }"
+            ),
+            provider: InMemoryShaderFileProvider([:])
+        )
+    }
+
+    @Test("Concurrent lookups of the same shader do not corrupt the cache")
+    func concurrentSameShader() throws {
+        // Wallpapers import on several queues; a torn dictionary here would crash rather than
+        // misrender, which is the worst way for a cache to fail.
+        let backend = ThreadSafeBackend()
+        let cache = ShaderCache(directory: nil)
+        let source = try shader(0)
+
+        DispatchQueue.concurrentPerform(iterations: 64) { _ in
+            var diagnostics: [ShaderDiagnostic] = []
+            _ = try? cache.shader(for: source, backend: backend, diagnostics: &diagnostics)
+        }
+
+        // Two callers can race past the lock and both compile; what must not happen is 64 of
+        // them, or a crash.
+        #expect(backend.compileCount < 64)
+        #expect(backend.compileCount >= 1)
+    }
+
+    @Test("Concurrent lookups of different shaders all return their own translation")
+    func concurrentDistinctShaders() throws {
+        let backend = ThreadSafeBackend()
+        let cache = ShaderCache(directory: nil)
+        let sources = try (0 ..< 32).map { try shader($0) }
+        let results = NSMutableDictionary()
+        let lock = NSLock()
+
+        DispatchQueue.concurrentPerform(iterations: sources.count) { index in
+            var diagnostics: [ShaderDiagnostic] = []
+            guard let translated = try? cache.shader(
+                for: sources[index], backend: backend, diagnostics: &diagnostics
+            ) else { return }
+            lock.lock()
+            results[index] = translated.msl
+            lock.unlock()
+        }
+
+        #expect(results.count == sources.count)
+        // Each shader's MSL is derived from its own length, so a mix-up would show up here.
+        for index in 0 ..< sources.count {
+            #expect(results[index] as? String == "// \(sources[index].glsl.count)")
+        }
+    }
+
+    @Test("Concurrent identity computation settles on one answer")
+    func concurrentIdentity() throws {
+        // Computed outside the lock on purpose, so several callers can race to produce it. They
+        // must all end up agreeing, or entries written by one would be invisible to another.
+        let backend = ThreadSafeBackend()
+        let cache = ShaderCache(directory: nil)
+        let answers = NSMutableSet()
+        let lock = NSLock()
+
+        DispatchQueue.concurrentPerform(iterations: 32) { _ in
+            let identity = cache.identity(of: backend)
+            lock.lock()
+            answers.add(identity ?? "nil")
+            lock.unlock()
+        }
+
+        #expect(answers.count == 1)
+    }
+}

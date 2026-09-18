@@ -75,12 +75,26 @@ public enum MaterialProgramError: Error, LocalizedError {
     case pipelineFailed(String)
     case geometryFailed
 
+    /// What the preprocessor found before the failure.
+    ///
+    /// Carried with the error because it is usually the actionable half. A shader with an
+    /// unreadable uniform declaration fails in the backend with "non-opaque uniforms outside a
+    /// block", which describes a rule the author never wrote against; the preprocessor already
+    /// knows it could not read line 3, and that is what the report should say.
+    public var diagnostics: [ShaderDiagnostic] {
+        if case .shaderFailed(_, let diagnostics) = self { return diagnostics }
+        return []
+    }
+
+    case shaderFailed(detail: String, diagnostics: [ShaderDiagnostic])
+
     public var errorDescription: String? {
         switch self {
         case .noShaderNamed: "The material pass names no shader."
         case .stageMissing(let name): "Shader \"\(name)\" is missing a stage."
         case .pipelineFailed(let detail): "The Metal pipeline could not be built: \(detail)"
         case .geometryFailed: "Quad geometry could not be allocated."
+        case .shaderFailed(let detail, _): detail
         }
     }
 }
@@ -171,8 +185,19 @@ public final class MaterialCompiler {
 
         var diagnostics = vertex.diagnostics + fragment.diagnostics
 
-        let vertexShader = try cache.shader(for: vertex, backend: backend, diagnostics: &diagnostics)
-        let fragmentShader = try cache.shader(for: fragment, backend: backend, diagnostics: &diagnostics)
+        let vertexShader: TranspiledShader
+        let fragmentShader: TranspiledShader
+        do {
+            vertexShader = try cache.shader(for: vertex, backend: backend, diagnostics: &diagnostics)
+            fragmentShader = try cache.shader(for: fragment, backend: backend, diagnostics: &diagnostics)
+        } catch {
+            // Remapped to the author's own line numbers: the prologue shifted everything and
+            // includes were flattened, so the raw number names a line nobody can open.
+            throw MaterialProgramError.shaderFailed(
+                detail: Self.remap(error, vertex: vertex, fragment: fragment),
+                diagnostics: diagnostics
+            )
+        }
 
         let descriptor = MTLRenderPipelineDescriptor()
         descriptor.label = "material-\(shaderName)"
@@ -390,6 +415,24 @@ public final class MaterialCompiler {
     /// The source hashes already cover the combo values, since the combo defines are part of
     /// the emitted GLSL that was hashed. Blend and pixel format are not in the shader at all
     /// but do change the pipeline, so they are named here.
+    /// Rewrites `0:37:` in a backend message to the file and line the author wrote.
+    static func remap(
+        _ error: any Error, vertex: PreprocessedShader, fragment: PreprocessedShader
+    ) -> String {
+        guard case TranspilerBackendError.translationFailed(let stage, let detail) = error else {
+            return error.localizedDescription
+        }
+        let shader = stage == .vertex ? vertex : fragment
+        let pattern = /0:(\d+):/
+        return detail.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            guard let match = line.firstMatch(of: pattern),
+                  let emitted = Int(match.1),
+                  let origin = shader.origin(ofEmittedLine: emitted)
+            else { return String(line) }
+            return String(line.replacing(pattern, with: "\(origin.file):\(origin.line):"))
+        }.joined(separator: "\n")
+    }
+
     static func cacheKey(
         vertex: PreprocessedShader,
         fragment: PreprocessedShader,
