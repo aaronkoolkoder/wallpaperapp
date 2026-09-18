@@ -10,6 +10,18 @@ import ShaderTranspiler
 import UniformTypeIdentifiers
 import WEFormat
 
+/// Rewrites `ERROR: 0:37:` in a backend message to the file and line the author wrote.
+func remapDiagnosticLines(_ detail: String, in shader: PreprocessedShader) -> String {
+    let pattern = /(\d+):(\d+):/
+    return detail.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+        guard let match = line.firstMatch(of: pattern),
+              let emitted = Int(match.2),
+              let origin = shader.origin(ofEmittedLine: emitted)
+        else { return String(line) }
+        return String(line.replacing(pattern, with: "\(origin.file):\(origin.line):"))
+    }.joined(separator: "\n")
+}
+
 // A developer CLI for inspecting Wallpaper Engine content without launching the app.
 //
 // Worth its keep during every later milestone: when a scene renders wrong, the first question is
@@ -352,15 +364,80 @@ case "shader":
     let shaderURL = URL(fileURLWithPath: arguments[1])
     let stage: ShaderStage = shaderURL.pathExtension.lowercased() == "vert" ? .vertex : .fragment
 
+    // `--raw` skips preprocessing and hands the file to the backend as written, which is how
+    // the emitted GLSL itself gets checked.
+    let raw = arguments.contains("--raw")
+    let dump = arguments.contains("--dump-glsl")
+
     do {
-        let glsl = try String(contentsOf: shaderURL, encoding: .utf8)
+        var glsl = try String(contentsOf: shaderURL, encoding: .utf8)
+        var prepared: PreprocessedShader?
+
+        if !raw {
+            let source = ShaderSource(
+                name: shaderURL.lastPathComponent, stage: stage, text: glsl
+            )
+            let provider = DirectoryShaderFileProvider(
+                root: shaderURL.deletingLastPathComponent()
+            )
+            let processed = try ShaderPreprocessor().preprocess(source, provider: provider)
+            glsl = processed.glsl
+            prepared = processed
+
+            for diagnostic in processed.diagnostics {
+                FileHandle.standardError.write(Data("\(diagnostic)\n".utf8))
+            }
+        }
+
+        if dump {
+            print(glsl)
+            exit(0)
+        }
+
         let backend = TranspilerBackendFactory.makeDefault()
         if backend is UnavailableTranspilerBackend {
             fail("shader toolchain not built — run Scripts/vendor-shader-tools.sh")
         }
-        let msl = try backend.compileToMSL(glsl: glsl, stage: stage)
+        let translated: TranspiledShader
+        do {
+            translated = try backend.compile(glsl: glsl, stage: stage)
+        } catch let error as TranspilerBackendError {
+            // Report the author's line, not the emitted one: the prologue shifted everything
+            // and includes were flattened, so the raw number names a line nobody can find.
+            if case .translationFailed(_, let detail) = error, let prepared {
+                fail(remapDiagnosticLines(detail, in: prepared))
+            }
+            fail("\(error)")
+        }
+
+        if let prepared, !prepared.layout.isEmpty {
+            print("// uniform block: \(prepared.layout.size) bytes")
+            let translated = translated.reflection.members
+            for member in prepared.layout.members {
+                let count = member.arrayLength.map { "[\($0)]" } ?? ""
+                // Disagreement here means every uniform after the first mismatch is written
+                // to the wrong place, so it is worth saying loudly rather than only in tests.
+                let reported = translated.first { $0.name == member.name }?.offset
+                let agreement = switch reported {
+                case .none: "  (eliminated)"
+                case .some(member.offset): ""
+                case .some(let other): "  MISMATCH: translator says +\(other)"
+                }
+                print("//   +\(member.offset)\t\(member.type.rawValue) \(member.name)\(count)\(agreement)")
+            }
+        }
         print("// \(shaderURL.lastPathComponent) -> Metal (\(stage.rawValue))")
-        print(msl)
+        print("// entry point: \(translated.reflection.entryPoint)")
+        for buffer in translated.reflection.buffers {
+            print("// buffer(\(buffer.slot)): \(buffer.name)")
+        }
+        for texture in translated.reflection.textures {
+            print("// texture(\(texture.slot)): \(texture.name)")
+        }
+        for sampler in translated.reflection.samplers {
+            print("// sampler(\(sampler.slot)): \(sampler.name)")
+        }
+        print(translated.msl)
     } catch { fail("\(error)") }
 
 case "-h", "--help", "help":

@@ -1,5 +1,6 @@
 #include "include/ShaderBridge.h"
 
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <string>
@@ -26,6 +27,113 @@ namespace {
 std::once_flag g_initOnce;
 #endif
 
+#if DIORAMA_SHADER_TOOLCHAIN_AVAILABLE
+
+/// Minimal JSON string escaping. Shader resource names are GLSL identifiers, so this only
+/// ever has work to do if SPIRV-Cross invents a name; escaping anyway keeps a surprising
+/// name from producing a reflection blob Swift cannot parse.
+std::string escape(const std::string &value) {
+    std::string out;
+    out.reserve(value.size() + 2);
+    for (const char character : value) {
+        switch (character) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (static_cast<unsigned char>(character) < 0x20) {
+                    char buffer[8];
+                    std::snprintf(buffer, sizeof(buffer), "\\u%04x", character);
+                    out += buffer;
+                } else {
+                    out += character;
+                }
+        }
+    }
+    return out;
+}
+
+/// Appends `"name":<slot>` entries for resources that survived translation.
+///
+/// `get_automatic_msl_resource_binding` returns the slot SPIRV-Cross actually assigned, or
+/// ~0u for a resource it eliminated. Skipping the eliminated ones is the point: the caller
+/// binds by name, so a resource absent from this list is one it must not bind.
+void appendResources(std::string &json,
+                     const spirv_cross::CompilerMSL &compiler,
+                     const spirv_cross::SmallVector<spirv_cross::Resource> &resources,
+                     bool secondary) {
+    bool first = true;
+    for (const auto &resource : resources) {
+        const uint32_t slot = secondary
+            ? compiler.get_automatic_msl_resource_binding_secondary(resource.id)
+            : compiler.get_automatic_msl_resource_binding(resource.id);
+        if (slot == uint32_t(-1)) {
+            continue;
+        }
+        if (!first) {
+            json += ",";
+        }
+        first = false;
+        json += "{\"name\":\"" + escape(resource.name) + "\",\"slot\":" + std::to_string(slot) + "}";
+    }
+}
+
+/// Describes where the translated shader expects its resources, as JSON.
+std::string reflect(const spirv_cross::CompilerMSL &compiler, spv::ExecutionModel model) {
+    const spirv_cross::ShaderResources resources = compiler.get_shader_resources();
+
+    std::string json = "{\"entryPoint\":\"";
+    json += escape(compiler.get_cleansed_entry_point_name("main", model));
+    json += "\",\"buffers\":[";
+    appendResources(json, compiler, resources.uniform_buffers, false);
+    json += "],\"members\":[";
+    // The byte offsets SPIRV-Cross baked into the generated struct. The Swift side computes
+    // the same offsets from the published std140 rules; reporting them here is what lets a
+    // test check the two agree rather than trusting that they do.
+    {
+        bool firstMember = true;
+        for (const auto &buffer : resources.uniform_buffers) {
+            const spirv_cross::SPIRType &type = compiler.get_type(buffer.base_type_id);
+            for (uint32_t index = 0; index < uint32_t(type.member_types.size()); ++index) {
+                if (!firstMember) {
+                    json += ",";
+                }
+                firstMember = false;
+                json += "{\"name\":\"" + escape(compiler.get_member_name(buffer.base_type_id, index)) +
+                        "\",\"offset\":" +
+                        std::to_string(compiler.type_struct_member_offset(type, index)) + "}";
+            }
+        }
+    }
+    json += "],\"textures\":[";
+    appendResources(json, compiler, resources.sampled_images, false);
+    appendResources(json, compiler, resources.separate_images, false);
+    json += "],\"samplers\":[";
+    // A GLSL-sourced combined image sampler carries both indices: the texture in the primary
+    // binding and the sampler in the secondary one.
+    appendResources(json, compiler, resources.sampled_images, true);
+    appendResources(json, compiler, resources.separate_samplers, false);
+    json += "],\"inputs\":[";
+    bool first = true;
+    for (const auto &input : resources.stage_inputs) {
+        if (!compiler.has_decoration(input.id, spv::DecorationLocation)) {
+            continue;
+        }
+        if (!first) {
+            json += ",";
+        }
+        first = false;
+        json += "{\"name\":\"" + escape(input.name) + "\",\"location\":" +
+                std::to_string(compiler.get_decoration(input.id, spv::DecorationLocation)) + "}";
+    }
+    json += "]}";
+    return json;
+}
+
+#endif  // DIORAMA_SHADER_TOOLCHAIN_AVAILABLE
+
 char *duplicate(const std::string &value) {
     char *result = static_cast<char *>(std::malloc(value.size() + 1));
     if (result == nullptr) {
@@ -44,11 +152,15 @@ void diorama_shader_bridge_initialize(void) {}
 int diorama_glsl_to_msl(const char *glsl,
                         DioramaShaderStage stage,
                         char **out_msl,
+                        char **out_reflection,
                         char **out_error) {
     (void)glsl;
     (void)stage;
     if (out_msl != nullptr) {
         *out_msl = nullptr;
+    }
+    if (out_reflection != nullptr) {
+        *out_reflection = nullptr;
     }
     if (out_error != nullptr) {
         *out_error = duplicate(
@@ -73,12 +185,16 @@ void diorama_shader_bridge_initialize(void) {
 int diorama_glsl_to_msl(const char *glsl,
                         DioramaShaderStage stage,
                         char **out_msl,
+                        char **out_reflection,
                         char **out_error) {
     if (glsl == nullptr || out_msl == nullptr || out_error == nullptr) {
         return 1;
     }
     *out_msl = nullptr;
     *out_error = nullptr;
+    if (out_reflection != nullptr) {
+        *out_reflection = nullptr;
+    }
 
     diorama_shader_bridge_initialize();
 
@@ -147,6 +263,18 @@ int diorama_glsl_to_msl(const char *glsl,
             *out_error = duplicate("MSL generation produced nothing");
             return 6;
         }
+
+        if (out_reflection != nullptr) {
+            const spv::ExecutionModel model = stage == DioramaShaderStageVertex
+                                                  ? spv::ExecutionModelVertex
+                                                  : spv::ExecutionModelFragment;
+            *out_reflection = duplicate(reflect(compiler, model));
+            if (*out_reflection == nullptr) {
+                *out_error = duplicate("could not allocate the reflection description");
+                return 10;
+            }
+        }
+
         *out_msl = duplicate(msl);
         return *out_msl == nullptr ? 7 : 0;
     } catch (const std::exception &error) {

@@ -20,6 +20,7 @@ Tests/Corpus/**
 
 # Agent scratch build dirs
 .build-agent-*/
+.build-main/
 
 # Web
 web/node_modules/

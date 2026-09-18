@@ -121,6 +121,35 @@ enum SourceText {
         return text.allSatisfy { $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "_") }
     }
 
+    /// Splits a leading `layout(...)` qualifier off a declaration.
+    ///
+    /// GLSL puts `layout` *before* the storage qualifier, so `layout(binding = 3) uniform
+    /// sampler2D g_B;` does not begin with the keyword a declaration parser is looking for.
+    /// Returns the qualifier (without trailing space) and the rest of the line.
+    static func splitLeadingLayout(_ code: String) -> (layout: String?, rest: String) {
+        guard startsWithKeyword(code, "layout") else { return (nil, code) }
+
+        var depth = 0
+        var sawOpen = false
+        for (offset, character) in code.enumerated() {
+            if character == "(" {
+                depth += 1
+                sawOpen = true
+            } else if character == ")" {
+                depth -= 1
+                if sawOpen, depth == 0 {
+                    let end = code.index(code.startIndex, offsetBy: offset + 1)
+                    return (
+                        String(code[code.startIndex..<end]),
+                        String(code[end...]).trimmingCharacters(in: .whitespaces)
+                    )
+                }
+            }
+        }
+        // Unbalanced parentheses: leave it alone rather than cutting it in half.
+        return (nil, code)
+    }
+
     static func trimmingTrailingWhitespace(_ text: String) -> String {
         var out = text
         while let last = out.last, last.isWhitespace { out.removeLast() }

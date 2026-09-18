@@ -18,9 +18,24 @@ typedef enum {
 ///
 /// On success returns 0 and sets `out_msl` to a newly allocated string the caller must release
 /// with `diorama_shader_free`. On failure returns non-zero and sets `out_error` instead.
+///
+/// `out_reflection` receives a JSON description of where the translated shader actually expects
+/// its resources. It is not optional detail: SPIRV-Cross renumbers bindings into compact Metal
+/// slots and drops resources the shader never reads, so a declared-but-unused sampler shifts
+/// every texture after it. Binding by declaration order would silently swap textures. The shape
+/// is:
+///
+///     {"entryPoint":"main0",
+///      "buffers":[{"name":"DioramaUniforms","slot":0}],
+///      "textures":[{"name":"g_Texture0","slot":0}],
+///      "samplers":[{"name":"g_Texture0","slot":0}],
+///      "inputs":[{"name":"v_TexCoord","location":0}]}
+///
+/// May be NULL when the caller does not want it.
 int diorama_glsl_to_msl(const char *glsl,
                         DioramaShaderStage stage,
                         char **out_msl,
+                        char **out_reflection,
                         char **out_error);
 
 /// Release a string returned by this bridge.

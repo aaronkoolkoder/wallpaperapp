@@ -175,3 +175,195 @@ struct BackendFallbackTests {
         _ = TranspilerBackendFactory.makeDefault()
     }
 }
+
+/// End-to-end: a shader written the way Wallpaper Engine ships them, through the preprocessor
+/// and into Metal.
+@Suite(
+    "Preprocessor and backend together",
+    .enabled(if: toolchainAvailable, "shader toolchain not vendored")
+)
+struct PipelineTests {
+
+    private let backend = GlslangTranspilerBackend()
+    private let preprocessor = ShaderPreprocessor()
+
+    /// Legacy qualifiers, removed builtins, annotated uniforms, combos and an include — every
+    /// construct that makes shipped content fail to compile as written.
+    private let legacyFragment = #"""
+    #include "common.h"
+
+    // [COMBO] {"combo":"BLOOM","default":1}
+
+    varying vec2 v_TexCoord;
+    varying vec4 v_Color;
+
+    uniform sampler2D g_Texture0; // {"material":"framebuffer"}
+    uniform sampler2D g_Noise;    // {"material":"noise"}
+
+    uniform vec4 g_Tint;      // {"material":"tint","default":"1 1 1 1","type":"color"}
+    uniform float g_Speed;    // {"material":"speed","default":"0.25","range":[0,2]}
+    uniform vec3 g_Direction; // {"material":"direction","default":"0 1 0"}
+    uniform float g_Time;
+    uniform mat4 g_ModelViewProjection;
+
+    void main() {
+        vec2 uv = v_TexCoord + CAST2(g_Time * g_Speed) * g_Direction.xy;
+        vec4 noise = texture2D(g_Noise, uv);
+    #if BLOOM
+        noise.rgb += CAST3(0.15);
+    #endif
+        gl_FragColor = texture2D(g_Texture0, uv) * g_Tint * v_Color * saturate(noise.r);
+    }
+    """#
+
+    private let common = """
+    #define CAST2(x) (vec2(x))
+    #define CAST3(x) (vec3(x))
+    float saturate(float v) { return clamp(v, 0.0, 1.0); }
+    """
+
+    private func preprocessed() throws -> PreprocessedShader {
+        try preprocessor.preprocess(
+            ShaderSource(name: "water.frag", stage: .fragment, text: legacyFragment),
+            provider: InMemoryShaderFileProvider(["common.h": common])
+        )
+    }
+
+    @Test("A shader in Wallpaper Engine's dialect compiles to Metal")
+    func compilesLegacyShader() throws {
+        let translated = try backend.compile(glsl: try preprocessed().glsl, stage: .fragment)
+        #expect(translated.msl.contains("#include <metal_stdlib>"))
+        #expect(translated.msl.contains("fragment"))
+        #expect(translated.msl.contains("sample"))
+    }
+
+    @Test("The computed std140 layout matches the one the translator emitted")
+    func layoutAgreesWithTranslator() throws {
+        // This is the invariant every uniform write depends on. `UniformBlockLayout` computes
+        // offsets from the published std140 rules without the toolchain; SPIRV-Cross bakes its
+        // own into the generated struct. If the two ever disagree, every uniform after the
+        // first mismatch is written to the wrong place and the shader renders nonsense rather
+        // than failing.
+        let shader = try preprocessed()
+        let translated = try backend.compile(glsl: shader.glsl, stage: .fragment)
+
+        #expect(!shader.layout.members.isEmpty)
+        #expect(!translated.reflection.members.isEmpty)
+
+        for member in shader.layout.members {
+            guard let reported = translated.reflection.members.first(where: { $0.name == member.name }) else {
+                Issue.record("the translator dropped \(member.name)")
+                continue
+            }
+            #expect(
+                member.offset == reported.offset,
+                "\(member.name) is at +\(member.offset) here and +\(reported.offset) there"
+            )
+        }
+    }
+
+    @Test("Binding slots come from the translator, not from declaration order")
+    func bindingsFollowReflection() throws {
+        // SPIRV-Cross renumbers into compact Metal slots and drops what the shader never
+        // reads, so the second declared sampler becomes texture(0) when the first is unused.
+        // Anything that bound by declaration index would swap them.
+        let source = """
+        uniform sampler2D g_Unused;
+        uniform sampler2D g_Used;
+        varying vec2 v_TexCoord;
+        void main() { gl_FragColor = texture2D(g_Used, v_TexCoord); }
+        """
+        let shader = try preprocessor.preprocess(
+            ShaderSource(name: "bind.frag", stage: .fragment, text: source),
+            provider: InMemoryShaderFileProvider([:])
+        )
+        let translated = try backend.compile(glsl: shader.glsl, stage: .fragment)
+
+        #expect(shader.samplers.map(\.name) == ["g_Unused", "g_Used"])
+        #expect(translated.reflection.textureSlot(for: "g_Used") == 0)
+        #expect(translated.reflection.textureSlot(for: "g_Unused") == nil)
+    }
+
+    @Test("Each combo variant translates to different Metal")
+    func combosChangeOutput() throws {
+        // If the variants produced identical MSL the combo would be doing nothing, and the
+        // content hash that keys the cache would be the only thing distinguishing them.
+        func translate(bloom: Int) throws -> String {
+            let shader = try preprocessor.preprocess(
+                ShaderSource(name: "water.frag", stage: .fragment, text: legacyFragment),
+                provider: InMemoryShaderFileProvider(["common.h": common]),
+                comboOverrides: ["BLOOM": bloom]
+            )
+            return try backend.compile(glsl: shader.glsl, stage: .fragment).msl
+        }
+        #expect(try translate(bloom: 0) != (try translate(bloom: 1)))
+    }
+
+    @Test("A paired vertex and fragment shader agree on their varyings")
+    func pairedStagesAgree() throws {
+        let (vertex, fragment) = try preprocessor.preprocessPair(
+            vertex: ShaderSource(name: "p.vert", stage: .vertex, text: """
+            attribute vec3 a_Position;
+            attribute vec2 a_TexCoord;
+            varying vec2 v_TexCoord;
+            varying vec4 v_Color;
+            uniform mat4 g_ModelViewProjection;
+            void main() {
+                v_TexCoord = a_TexCoord;
+                v_Color = vec4(1.0);
+                gl_Position = g_ModelViewProjection * vec4(a_Position, 1.0);
+            }
+            """),
+            fragment: ShaderSource(name: "p.frag", stage: .fragment, text: """
+            varying vec4 v_Color;
+            varying vec2 v_TexCoord;
+            uniform sampler2D g_Texture0;
+            void main() { gl_FragColor = texture2D(g_Texture0, v_TexCoord) * v_Color; }
+            """),
+            provider: InMemoryShaderFileProvider([:])
+        )
+
+        let vertexOut = try backend.compile(glsl: vertex.glsl, stage: .vertex).reflection
+        let fragmentIn = try backend.compile(glsl: fragment.glsl, stage: .fragment).reflection
+
+        // The fragment shader's inputs must land on the locations the vertex shader wrote, or
+        // it reads whichever varying happened to take that slot.
+        for input in fragmentIn.inputs {
+            #expect(
+                vertex.varyings.contains(input.name),
+                "the fragment stage reads \(input.name), which the vertex stage does not write"
+            )
+        }
+        #expect(!vertexOut.entryPoint.isEmpty)
+        #expect(Set(fragmentIn.inputs.map(\.location)).count == fragmentIn.inputs.count)
+    }
+
+    @Test("A compiler error points at the line the author wrote")
+    func errorsMapBackToSource() throws {
+        // The prologue shifts every line and includes are flattened, so the raw number names a
+        // line in a file nobody can open.
+        let shader = try preprocessor.preprocess(
+            ShaderSource(name: "broken.frag", stage: .fragment, text: """
+            varying vec2 v_TexCoord;
+            void main() { thisFunctionDoesNotExist(); }
+            """),
+            provider: InMemoryShaderFileProvider([:])
+        )
+
+        do {
+            _ = try backend.compile(glsl: shader.glsl, stage: .fragment)
+            Issue.record("expected the broken shader to fail")
+        } catch let error as TranspilerBackendError {
+            guard case .translationFailed(_, let detail) = error else {
+                Issue.record("expected a translation failure")
+                return
+            }
+            // glslang reports `ERROR: 0:<line>:`; that line must map back into the original.
+            let reported = detail.matches(of: /0:(\d+):/).compactMap { Int($0.1) }
+            #expect(!reported.isEmpty)
+            for line in reported {
+                #expect(shader.origin(ofEmittedLine: line)?.line == 2)
+            }
+        }
+    }
+}
