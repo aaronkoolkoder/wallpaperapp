@@ -23,6 +23,10 @@ public final class MaterialRenderer {
     /// large uniform arrays does not allocate one per frame.
     private var scratchBuffers: [String: any MTLBuffer] = [:]
 
+    /// Reused across draws so filling a constant buffer allocates nothing per frame.
+    private var vertexScratch: [UInt8] = []
+    private var fragmentScratch: [UInt8] = []
+
     /// Counts draws that had to fall back to a placeholder texture, for the compatibility report.
     public private(set) var missingTextureBindings = 0
 
@@ -111,25 +115,31 @@ public final class MaterialRenderer {
         var unsupplied: [String] = []
 
         if let slot = program.vertexBufferSlot, !program.vertexLayout.isEmpty {
-            let filled = UniformBufferWriter.fill(
+            unsupplied += UniformBufferWriter.fill(
+                into: &vertexScratch,
                 layout: program.vertexLayout,
                 declarations: program.vertexUniforms,
                 constants: context.constants,
                 engine: engine
             )
-            unsupplied.append(contentsOf: filled.unsuppliedEngineUniforms)
-            bind(filled.bytes, key: program.name + ".vert", slot: slot, encoder: encoder, stage: .vertex)
+            bind(
+                vertexScratch, count: program.vertexLayout.size,
+                key: program.name + ".vert", slot: slot, encoder: encoder, stage: .vertex
+            )
         }
 
         if let slot = program.fragmentBufferSlot, !program.fragmentLayout.isEmpty {
-            let filled = UniformBufferWriter.fill(
+            unsupplied += UniformBufferWriter.fill(
+                into: &fragmentScratch,
                 layout: program.fragmentLayout,
                 declarations: program.fragmentUniforms,
                 constants: context.constants,
                 engine: engine
             )
-            unsupplied.append(contentsOf: filled.unsuppliedEngineUniforms)
-            bind(filled.bytes, key: program.name + ".frag", slot: slot, encoder: encoder, stage: .fragment)
+            bind(
+                fragmentScratch, count: program.fragmentLayout.size,
+                key: program.name + ".frag", slot: slot, encoder: encoder, stage: .fragment
+            )
         }
 
         // Bound by name through the slots the translator reported. Binding by declaration order
@@ -165,22 +175,25 @@ public final class MaterialRenderer {
 
     private enum Stage { case vertex, fragment }
 
+    /// - Parameter count: bytes to bind. The scratch array may be larger than this layout,
+    ///   since it is sized to the largest one seen so far and never shrinks.
     private func bind(
         _ bytes: [UInt8],
+        count: Int,
         key: String,
         slot: Int,
         encoder: any MTLRenderCommandEncoder,
         stage: Stage
     ) {
-        guard !bytes.isEmpty else { return }
+        guard count > 0, bytes.count >= count else { return }
 
-        if bytes.count <= Self.inlineByteLimit {
+        if count <= Self.inlineByteLimit {
             bytes.withUnsafeBytes { raw in
                 switch stage {
                 case .vertex:
-                    encoder.setVertexBytes(raw.baseAddress!, length: raw.count, index: slot)
+                    encoder.setVertexBytes(raw.baseAddress!, length: count, index: slot)
                 case .fragment:
-                    encoder.setFragmentBytes(raw.baseAddress!, length: raw.count, index: slot)
+                    encoder.setFragmentBytes(raw.baseAddress!, length: count, index: slot)
                 }
             }
             return
@@ -189,10 +202,10 @@ public final class MaterialRenderer {
         // Reused across frames: a shader with large uniform arrays would otherwise allocate
         // once per draw, which is exactly the per-frame allocation PLAN.md §6 rules out.
         let buffer: any MTLBuffer
-        if let existing = scratchBuffers[key], existing.length >= bytes.count {
+        if let existing = scratchBuffers[key], existing.length >= count {
             buffer = existing
         } else {
-            guard let made = device.makeBuffer(length: bytes.count, options: .storageModeShared) else {
+            guard let made = device.makeBuffer(length: count, options: .storageModeShared) else {
                 log.error("could not allocate a constant buffer for \(key, privacy: .public)")
                 return
             }
@@ -202,7 +215,7 @@ public final class MaterialRenderer {
         }
 
         bytes.withUnsafeBytes { raw in
-            buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: raw.count)
+            buffer.contents().copyMemory(from: raw.baseAddress!, byteCount: count)
         }
         switch stage {
         case .vertex: encoder.setVertexBuffer(buffer, offset: 0, index: slot)

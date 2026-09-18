@@ -294,11 +294,16 @@ case "scene":
 
     do {
         let renderDevice = try RenderDevice.system()
+        // `--no-shaders` draws every layer through the built-in quad shader, which is what the
+        // renderer did before materials were compiled. Having both in one binary is what makes
+        // the cost of running a wallpaper's own shaders measurable rather than argued about.
+        let compileMaterials = !arguments.contains("--no-shaders")
         let scene = try SceneRenderer.loadScene(
             directory: directory,
             packageURL: packageURL,
             wallpaperID: directory.lastPathComponent,
-            device: renderDevice.device
+            device: renderDevice.device,
+            compileMaterials: compileMaterials
         )
 
         print("layers:     \(scene.layers.count)")
@@ -324,6 +329,63 @@ case "scene":
         print("compatibility: \(scene.report.level.label) — \(scene.report.summary)")
         for finding in findings {
             print("  [\(finding.level)] \(finding.feature)\(finding.detail.map { ": \($0)" } ?? "")")
+        }
+
+        if subcommand == "bench" {
+            // Renders the same scene repeatedly and reports CPU cost per frame. The absolute
+            // number includes an offscreen readback the live path does not do; what it is for
+            // is comparing two builds of the same scene, which is why `--no-shaders` exists.
+            let frames = arguments.count >= 4 ? (Int(arguments[3]) ?? 120) : 120
+            var benchWidth = 1920, benchHeight = 1080
+            if let sizeIndex = arguments.firstIndex(of: "--size"), sizeIndex + 1 < arguments.count {
+                let parts = arguments[sizeIndex + 1].lowercased().split(separator: "x")
+                if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                    benchWidth = w; benchHeight = h
+                }
+            }
+
+            let renderer = try SceneRenderer(renderDevice: renderDevice)
+            renderer.setScene(scene)
+
+            // Warm up: the first frames pay for pipeline creation and texture residency.
+            for _ in 0 ..< 10 {
+                _ = renderer.renderOffscreen(width: benchWidth, height: benchHeight)
+            }
+
+            var wallSamples: [Double] = []
+            var cpuSamples: [Double] = []
+            wallSamples.reserveCapacity(frames)
+            cpuSamples.reserveCapacity(frames)
+            for _ in 0 ..< frames {
+                // Thread CPU time, not wall time. The share of a core an idle wallpaper costs is
+                // the number PLAN.md §6 is about, and wall time here also counts waiting for the
+                // GPU — which is not CPU the user pays for.
+                let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
+                let wallStart = ProcessInfo.processInfo.systemUptime
+                _ = renderer.renderOffscreen(width: benchWidth, height: benchHeight)
+                wallSamples.append((ProcessInfo.processInfo.systemUptime - wallStart) * 1000)
+                cpuSamples.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStart) / 1_000_000)
+            }
+
+            func summarize(_ samples: [Double]) -> (mean: Double, median: Double, p95: Double) {
+                let sorted = samples.sorted()
+                return (
+                    sorted.reduce(0, +) / Double(sorted.count),
+                    sorted[sorted.count / 2],
+                    sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
+                )
+            }
+            let wall = summarize(wallSamples)
+            let cpu = summarize(cpuSamples)
+
+            print()
+            print(String(format: "frames:      %d at %dx%d", frames, benchWidth, benchHeight))
+            print(String(format: "wall:        %.3f ms median, %.3f p95", wall.median, wall.p95))
+            print(String(format: "cpu:         %.3f ms median, %.3f p95", cpu.median, cpu.p95))
+            // Includes an offscreen readback the live path does not do, so this is an upper
+            // bound rather than the figure a running wallpaper costs.
+            print(String(format: "at 30 fps:   %.2f%% of one core (upper bound)", cpu.median * 30 / 10))
+            exit(0)
         }
 
         if subcommand == "render" {

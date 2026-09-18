@@ -341,6 +341,25 @@ percent of **one** core, as `ps` reports them.
 | Video, 1080p H.264 | < 1% | **3.2%** ⚠️ | Misses target. See below. |
 | Video, 4K HEVC 240fps | — | **3.6%** | Apple's own wallpaper format; an outlier, not typical Workshop content. |
 | Idle app, no content | — | **0%**, 45MB RSS | |
+| Scene, 8 layers running their own shaders | 1–2% | **+0.09 points** ✅ | Cost *added* by transpiled shaders over the built-in one. |
+| Scene, 32 layers running their own shaders | 1–2% | **+0.19 points** ✅ | Sub-linear: the per-draw cost falls as fixed work amortises. |
+
+**Running a wallpaper's own shaders is close to free on the CPU.** Measured with
+`wetool scene bench <dir> --size 256x256`, which keeps the offscreen readback small enough that
+what is left is the per-frame encode. Eight layers cost 0.082 ms of thread CPU per frame with
+their own compiled shaders against 0.054 ms through the built-in quad shader; thirty-two cost
+0.113 ms against 0.051 ms. That is 2–3.5 µs per draw, and it falls per draw as the count rises
+because the fixed part of the frame amortises.
+
+The same run at 1920x1080 reports ~1 ms per frame, but that figure is an upper bound and not the
+one to quote: the harness blocks on the GPU and copies an 8 MB frame back, neither of which a
+running wallpaper does. The small-target delta is the honest measure of what was added, because
+the work in question — filling constant buffers and switching pipelines — does not scale with
+resolution. GPU cost does scale, and is the author's shader rather than ours.
+
+Per-frame allocation was the thing to watch here, since a constant buffer is filled per material
+draw. `UniformBufferWriter` fills reusable storage, and `MaterialRenderer` keeps one scratch
+array per stage across every draw, so a frame allocates nothing regardless of layer count (§6.2).
 
 **The video number misses its target and the reason is now understood.** Cost is roughly constant
 across 1080p H.264 and 4K HEVC — halving the resolution and changing codec moved it by 0.4 points

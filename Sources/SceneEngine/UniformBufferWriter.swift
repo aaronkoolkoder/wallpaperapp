@@ -116,13 +116,39 @@ public enum UniformBufferWriter {
         constants: [String: DynamicValue] = [:],
         engine: EngineUniforms
     ) -> Result {
-        var bytes = [UInt8](repeating: 0, count: layout.size)
+        var bytes: [UInt8] = []
+        let unsupplied = fill(
+            into: &bytes, layout: layout, declarations: declarations,
+            constants: constants, engine: engine
+        )
+        return Result(bytes: bytes, unsuppliedEngineUniforms: unsupplied)
+    }
+
+    /// Fills reusable storage rather than returning a fresh array.
+    ///
+    /// This runs once per material draw per frame, so allocating here would be exactly the
+    /// per-frame allocation PLAN.md §6.2 rules out. `bytes` is resized only when the layout
+    /// grows, and zeroed every call so a uniform nothing supplies does not inherit the last
+    /// draw's value.
+    @discardableResult
+    public static func fill(
+        into bytes: inout [UInt8],
+        layout: UniformBlockLayout,
+        declarations: [ShaderUniformDeclaration],
+        constants: [String: DynamicValue] = [:],
+        engine: EngineUniforms
+    ) -> [String] {
+        if bytes.count < layout.size {
+            bytes.append(contentsOf: repeatElement(0, count: layout.size - bytes.count))
+        }
+        for index in 0 ..< layout.size { bytes[index] = 0 }
+
         var unsupplied: [String] = []
 
-        let byName = Dictionary(declarations.map { ($0.name, $0) }, uniquingKeysWith: { first, _ in first })
-
         for member in layout.members {
-            let declaration = byName[member.name]
+            // Linear rather than a dictionary: building one would allocate every frame, and a
+            // shader's uniform count is small enough that the scan is cheaper anyway.
+            let declaration = declarations.first { $0.name == member.name }
 
             if let values = engine.value(for: member.name) {
                 write(values, into: &bytes, member: member)
@@ -146,7 +172,7 @@ public enum UniformBufferWriter {
             }
         }
 
-        return Result(bytes: bytes, unsuppliedEngineUniforms: unsupplied)
+        return unsupplied
     }
 
     /// Writes `values` at a member's offset, respecting std140's internal padding.
@@ -185,7 +211,7 @@ public enum UniformBufferWriter {
             for component in 0 ..< componentsPerElement {
                 guard let value = source.next() else { return }
                 let at = base + component * 4
-                guard at + 4 <= bytes.count else { return }
+                guard at + 4 <= bytes.count, at + 4 <= member.offset + member.size else { return }
                 withUnsafeBytes(of: value.bitPattern.littleEndian) { raw in
                     for (index, byte) in raw.enumerated() { bytes[at + index] = byte }
                 }

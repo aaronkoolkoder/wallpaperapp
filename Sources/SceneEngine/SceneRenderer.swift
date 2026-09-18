@@ -90,7 +90,8 @@ public final class SceneRenderer {
         packageURL: URL?,
         wallpaperID: String,
         device: any MTLDevice,
-        materials: MaterialCompiler? = nil
+        materials: MaterialCompiler? = nil,
+        compileMaterials: Bool = true
     ) throws -> RenderableScene {
         let assets = SceneAssets(
             wallpaperID: wallpaperID, directory: directory, packageURL: packageURL
@@ -99,9 +100,12 @@ public final class SceneRenderer {
             throw SceneError.missingSceneDocument
         }
         let document = try JSONDecoder().decode(SceneDocument.self, from: sceneData)
+        // `compileMaterials: false` draws every layer through the built-in quad shader, which
+        // is what the renderer did before the transpiler. Kept reachable so the cost of running
+        // a wallpaper's own shaders can be measured rather than argued about.
         return SceneBuilder().build(
             document: document, assets: assets, device: device,
-            materials: materials ?? MaterialCompiler(device: device)
+            materials: materials ?? (compileMaterials ? MaterialCompiler(device: device) : nil)
         )
     }
 

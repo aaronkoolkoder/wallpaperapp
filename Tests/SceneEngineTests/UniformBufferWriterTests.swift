@@ -188,6 +188,56 @@ struct UniformBufferWriterTests {
         #expect(engine.value(for: "g_NotAThing") == nil)
     }
 
+    @Test("Reused storage does not leak the previous draw's values")
+    func reusedStorageIsCleared() {
+        // The renderer keeps one scratch array across every material it draws, sized to the
+        // largest layout it has seen. Without zeroing, a shader with a smaller block would read
+        // whatever the previous, larger one left behind — a stale value that changes with draw
+        // order and would be miserable to reproduce.
+        var scratch: [UInt8] = []
+
+        let large = [declaration("g_A", .vec4, defaultValue: .vector([1, 2, 3, 4])),
+                     declaration("g_B", .vec4, defaultValue: .vector([5, 6, 7, 8]))]
+        UniformBufferWriter.fill(
+            into: &scratch, layout: UniformBlockLayout.std140(for: large),
+            declarations: large, engine: EngineUniforms()
+        )
+
+        let small = [declaration("g_C", .vec4)]
+        let smallLayout = UniformBlockLayout.std140(for: small)
+        UniformBufferWriter.fill(
+            into: &scratch, layout: smallLayout, declarations: small, engine: EngineUniforms()
+        )
+
+        #expect(scratch[0 ..< smallLayout.size].allSatisfy { $0 == 0 })
+    }
+
+    @Test("Storage grows to the largest layout and is reused after")
+    func storageGrowsOnce() {
+        var scratch: [UInt8] = []
+        let small = [declaration("g_A", .float, defaultValue: .scalar(1))]
+        UniformBufferWriter.fill(
+            into: &scratch, layout: UniformBlockLayout.std140(for: small),
+            declarations: small, engine: EngineUniforms()
+        )
+        let firstSize = scratch.count
+
+        let large = [declaration("g_M", .mat4, defaultValue: .vector(Array(repeating: 1, count: 16)))]
+        UniformBufferWriter.fill(
+            into: &scratch, layout: UniformBlockLayout.std140(for: large),
+            declarations: large, engine: EngineUniforms()
+        )
+        #expect(scratch.count > firstSize)
+
+        let grownSize = scratch.count
+        UniformBufferWriter.fill(
+            into: &scratch, layout: UniformBlockLayout.std140(for: small),
+            declarations: small, engine: EngineUniforms()
+        )
+        // Never shrinks, so drawing a small material after a large one does not reallocate.
+        #expect(scratch.count == grownSize)
+    }
+
     @Test("A short value does not write past its member")
     func doesNotOverrun() {
         // A malformed constant is common; writing past the member would corrupt the next one.
