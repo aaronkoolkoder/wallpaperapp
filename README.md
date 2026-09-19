@@ -163,3 +163,14 @@ reimplementations, which would rule out App Store distribution. See
 [THIRD_PARTY.md](THIRD_PARTY.md) and PLAN.md §11.
 
 Run `Scripts/verify-dependency.sh` on anything pulled into the project before using it.
+
+## Legal and privacy
+
+- [PRIVACY.md](PRIVACY.md) — the whole policy. Nothing leaves your Mac; there is no networking
+  code in the app at all.
+- [LEGAL.md](LEGAL.md) — why reading these formats is safe ground, what the working rules are,
+  and where the real exposure is.
+- [THIRD_PARTY.md](THIRD_PARTY.md) — vendored dependencies and the licences that constrain them.
+
+Diorama is not affiliated with or endorsed by the developer of Wallpaper Engine. It bundles no
+Wallpaper Engine content, code, or branding, and downloads nothing on your behalf.

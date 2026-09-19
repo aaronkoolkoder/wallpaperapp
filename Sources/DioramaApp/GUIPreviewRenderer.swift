@@ -42,6 +42,16 @@ enum GUIPreviewRenderer {
             to: directory.appendingPathComponent("menubar.png")
         )
 
+        // Every page of the walkthrough, so its layout can be checked without a running Mac.
+        // The controls at the bottom render as their disabled selves under ImageRenderer, which
+        // is fine — the text and spacing are what is being looked at here.
+        for step in TutorialSheet.steps {
+            write(
+                TutorialSheet(startingAt: step.id, onImport: {}, onClose: {}),
+                to: directory.appendingPathComponent("tutorial-\(step.id + 1).png")
+            )
+        }
+
         let sample = previewItem()
 
         // Grid cards side by side: one playable and selected, one unsupported.

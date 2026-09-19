@@ -60,6 +60,11 @@ struct LibraryView: View {
     @State private var selection: WallpaperItem.ID?
     @State private var showsInspector = true
     @State private var showingPlaylists = false
+    @State private var showingTutorial = false
+
+    /// Remembers whether the walkthrough has been seen. Held here rather than in the app
+    /// delegate because this window is the only place it can appear.
+    private let tutorial = TutorialPresentation()
 
     private var visibleItems: [WallpaperItem] {
         let base = store.items.filter { filter.matches($0) }
@@ -123,6 +128,14 @@ struct LibraryView: View {
         }
         .toolbar { toolbarContent }
         .frame(minWidth: 940, minHeight: 620)
+        .sheet(isPresented: $showingTutorial) { tutorialSheet }
+        .task {
+            // Marked seen on close rather than on show, so quitting mid-walkthrough does not
+            // silently burn the one time it appears by itself.
+            if tutorial.shouldShowOnLaunch(hasLibrary: store.rootURL != nil) {
+                showingTutorial = true
+            }
+        }
         .sheet(isPresented: $showingPlaylists) {
             if let playlists {
                 VStack(spacing: 0) {
@@ -221,7 +234,11 @@ struct LibraryView: View {
     @ViewBuilder
     private var detail: some View {
         if store.rootURL == nil {
-            EmptyLibraryView(onChoose: chooseFolder, accessError: store.accessError)
+            EmptyLibraryView(
+                onChoose: chooseFolder,
+                onShowTutorial: { showingTutorial = true },
+                accessError: store.accessError
+            )
         } else if store.isScanning && store.items.isEmpty {
             VStack(spacing: 12) {
                 ProgressView()
@@ -266,6 +283,22 @@ struct LibraryView: View {
 
     // MARK: - Toolbar
 
+    /// Split out of the sheet modifier: as an inline closure the type checker gives up on it.
+    private var tutorialSheet: TutorialSheet {
+        // The folder picker is offered only when there is nothing imported yet; someone
+        // reopening the walkthrough mid-library does not want one sprung on them at the end.
+        // Written out rather than as a ternary: a conditional between a method reference and
+        // nil is one the type checker will not infer.
+        var importAction: (() -> Void)?
+        if store.rootURL == nil {
+            importAction = { chooseFolder() }
+        }
+        return TutorialSheet(onImport: importAction) {
+            showingTutorial = false
+            tutorial.hasBeenSeen = true
+        }
+    }
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .primaryAction) {
@@ -284,6 +317,14 @@ struct LibraryView: View {
                 Label("Inspector", systemImage: "sidebar.trailing")
             }
             .help("Show or hide the inspector")
+        }
+        ToolbarItem(placement: .automatic) {
+            Button {
+                showingTutorial = true
+            } label: {
+                Label("How to Import", systemImage: "questionmark.circle")
+            }
+            .help("Show the import walkthrough again")
         }
     }
 
@@ -307,6 +348,7 @@ struct LibraryView: View {
 /// showing a bare folder picker and hoping.
 struct EmptyLibraryView: View {
     let onChoose: () -> Void
+    var onShowTutorial: (() -> Void)?
     var accessError: String?
 
     var body: some View {
@@ -347,9 +389,16 @@ struct EmptyLibraryView: View {
                     .frame(maxWidth: 430)
             }
 
-            Button("Choose Folder…", action: onChoose)
-                .controlSize(.extraLarge)
-                .buttonStyle(.borderedProminent)
+            HStack(spacing: 12) {
+                Button("Choose Folder…", action: onChoose)
+                    .controlSize(.extraLarge)
+                    .buttonStyle(.borderedProminent)
+
+                if let onShowTutorial {
+                    Button("Show Me How", action: onShowTutorial)
+                        .controlSize(.extraLarge)
+                }
+            }
         }
         .padding(44)
         .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -95,6 +95,7 @@ let package = Package(
         .testTarget(name: "WallpaperKitTests", dependencies: ["WallpaperKit"]),
         .testTarget(name: "LibraryKitTests", dependencies: ["LibraryKit"]),
         .testTarget(name: "PlayerCoreTests", dependencies: ["PlayerCore", "WEFormat"]),
+        .testTarget(name: "DioramaAppTests", dependencies: ["DioramaApp", "LibraryKit"]),
         .testTarget(name: "MetalRendererTests", dependencies: ["MetalRenderer"]),
     ],
     cxxLanguageStandard: .cxx17

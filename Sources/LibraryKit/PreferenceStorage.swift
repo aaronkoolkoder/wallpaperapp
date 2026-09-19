@@ -9,6 +9,7 @@ import Foundation
 /// throwaway `UserDefaults` that never touches disk, so the dependency is inverted instead.
 public protocol PreferenceStorage: AnyObject {
     func data(forKey defaultName: String) -> Data?
+    func bool(forKey defaultName: String) -> Bool
     func set(_ value: Any?, forKey defaultName: String)
     func removeObject(forKey defaultName: String)
 }
@@ -29,6 +30,12 @@ public final class InMemoryPreferences: PreferenceStorage, @unchecked Sendable {
     public func data(forKey defaultName: String) -> Data? {
         lock.lock(); defer { lock.unlock() }
         return values[defaultName] as? Data
+    }
+
+    /// Matches `UserDefaults`: an unset key reads as false rather than as missing.
+    public func bool(forKey defaultName: String) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        return values[defaultName] as? Bool ?? false
     }
 
     public func set(_ value: Any?, forKey defaultName: String) {
