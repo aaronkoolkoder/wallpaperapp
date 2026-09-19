@@ -64,22 +64,51 @@ struct PKGArchiveTests {
     // process that runs continuously in the background. None of it may trap, hang, or allocate
     // unboundedly — it must throw a typed error.
 
-    @Test("Rejects a file that is not a package at all")
+    @Test("Anything that is not a PKGV signature is refused")
     func notAPackage() {
+        // The structural check must not be so permissive that a mis-detected file parses.
+        // Four digits exactly: `PKGV001` and `PKGV00011` are not revisions, they are noise.
+        for bogus in ["PKGVABCD", "PKGV001", "PKGV00011", ""] {
+            var bad = Data()
+            bad.appendLengthPrefixed(bogus)
+            bad.appendInt32(0)
+            #expect(throws: WEError.self, "\"\(bogus)\" should not read as a package") {
+                try PKGArchive(data: bad)
+            }
+        }
+
         var data = Data()
         data.appendLengthPrefixed("ZIPV0001")
         data.appendInt32(0)
         #expect(throws: WEError.self) { try PKGArchive(data: data) }
     }
 
-    @Test("Distinguishes an unknown revision from a wrong file type")
-    func futureVersion() {
+    @Test("An unseen revision is attempted, not refused")
+    func futureVersion() throws {
+        // Refusing revisions off a fixed list cost 85% of the scenes in a real Workshop library:
+        // it contained every revision from PKGV0001 to PKGV0024, all sharing one entry layout.
+        // The reader validates structure instead, so a revision nobody has seen is read and only
+        // rejected if it actually fails the range and path checks.
         var data = Data()
         data.appendLengthPrefixed("PKGV9999")
         data.appendInt32(0)
 
-        // The distinction matters: one is a mis-detected file, the other is a feature request.
-        #expect(throws: WEError.unsupportedVersion("PKGV9999")) { try PKGArchive(data: data) }
+        let archive = try PKGArchive(data: data)
+        #expect(archive.version == "PKGV9999")
+        #expect(archive.entries.isEmpty)
+    }
+
+    @Test("An unseen revision whose layout differs fails on the range checks")
+    func futureVersionWithBadLayout() {
+        // What the version allowlist was really guarding: garbage must not read as content.
+        // An entry claiming more bytes than the blob holds is rejected whatever the version says.
+        var data = Data()
+        data.appendLengthPrefixed("PKGV9999")
+        data.appendInt32(1)
+        data.appendLengthPrefixed("scene.json")
+        data.appendInt32(0)
+        data.appendInt32(1_000_000)
+        #expect(throws: WEError.self) { try PKGArchive(data: data) }
     }
 
     @Test("Survives an absurd entry count without allocating")

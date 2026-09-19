@@ -106,7 +106,7 @@ struct EffectChainTests {
           "general": { "orthogonalprojection": { "width": 64, "height": 64 },
                        "clearcolor": "0 0 0" },
           "objects": [
-            { "image": "materials/layer.json", "name": "base", "origin": "0 0 0",
+            { "image": "materials/layer.json", "name": "base", "origin": "32 32 0",
               "size": "64 64", "visible": true,
               "effects": [ { "file": "effects/swap.json", "visible": true } ] }
           ]

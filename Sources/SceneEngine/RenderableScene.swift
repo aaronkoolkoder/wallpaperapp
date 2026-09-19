@@ -118,8 +118,13 @@ public struct RenderableScene: @unchecked Sendable {
     }
 
     public var projectionMatrix: simd_float4x4 {
-        // Maps the scene's ortho box onto clip space with Y up. Wallpaper Engine places the
-        // origin at the centre of the scene, not a corner, so this is symmetric about zero.
+        // Maps the scene's ortho box onto clip space with Y up, with the origin at a *corner*.
+        //
+        // Not symmetric about zero, which is what it assumed until real content disproved it: a
+        // full-screen layer in a 1920x1080 scene is placed at origin "960 540 0", the centre of
+        // the box measured from its corner. Treating that as an offset from the middle pushed
+        // every layer up and to the right by half a screen, so a wallpaper rendered with its
+        // background in one quadrant.
         //
         // The box is widened by the worst-case parallax deflection. Wallpaper Engine leaves this
         // to the scene author — backgrounds are normally drawn oversized — but a scene authored
@@ -128,13 +133,18 @@ public struct RenderableScene: @unchecked Sendable {
         // enough to keep the frame covered, and costs nothing when parallax is off or depths
         // are zero.
         let margin = maximumParallaxShift
-        let halfWidth = max(1, orthoSize.x) * 0.5 - margin.x
-        let halfHeight = max(1, orthoSize.y) * 0.5 - margin.y
+        let halfWidth = max(1, max(1, orthoSize.x) * 0.5 - margin.x)
+        let halfHeight = max(1, max(1, orthoSize.y) * 0.5 - margin.y)
+        let centre = SIMD2(max(1, orthoSize.x) * 0.5, max(1, orthoSize.y) * 0.5)
+
+        // Scale about the box's centre and shift the corner origin onto it.
+        let scaleX = 1 / halfWidth
+        let scaleY = 1 / halfHeight
         return simd_float4x4(
-            SIMD4(1 / max(1, halfWidth), 0, 0, 0),
-            SIMD4(0, 1 / max(1, halfHeight), 0, 0),
+            SIMD4(scaleX, 0, 0, 0),
+            SIMD4(0, scaleY, 0, 0),
             SIMD4(0, 0, 1, 0),
-            SIMD4(0, 0, 0, 1)
+            SIMD4(-centre.x * scaleX, -centre.y * scaleY, 0, 1)
         )
     }
 }
@@ -439,11 +449,12 @@ public struct SceneBuilder {
         report: inout CompatibilityReport
     ) -> RenderableLayer? {
         guard let imagePath = object.image else { return nil }
-        guard let material = assets.material(at: imagePath) else { return nil }
-        guard let pass = material.firstPass else {
+        guard let resolved = assets.resolvedMaterial(forImage: imagePath) else { return nil }
+        guard let pass = resolved.material.firstPass else {
             report.add(.degraded, feature: "Material", detail: "\(imagePath) declares no passes")
             return nil
         }
+        let material = resolved.material
 
         var texture: (any MTLTexture)?
         if let texturePath = pass.primaryTexture {

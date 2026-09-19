@@ -97,6 +97,42 @@ public final class SceneAssets {
         }
     }
 
+    /// The material a scene object's `image` path leads to.
+    ///
+    /// Workshop scenes point `image` at a *model* (`models/foo.json`), which names the material
+    /// (`materials/foo.json`). Locally authored content sometimes points straight at a material,
+    /// so both are accepted: whatever is there is read as a material first, and only if it
+    /// declares no passes is it re-read as a model and followed.
+    public func resolvedMaterial(forImage path: String) -> (material: MaterialDocument, model: ModelDocument?)? {
+        guard let data = data(for: path) ?? data(for: path + ".json") else {
+            report.add(.degraded, feature: "Material", detail: "\(path) is missing")
+            return nil
+        }
+
+        if let direct = try? JSONDecoder().decode(MaterialDocument.self, from: data),
+           !direct.passes.isEmpty {
+            return (direct, nil)
+        }
+
+        guard let model = try? JSONDecoder().decode(ModelDocument.self, from: data) else {
+            report.add(.degraded, feature: "Material", detail: "\(path) could not be parsed")
+            return nil
+        }
+        guard let materialPath = model.material else {
+            report.add(.degraded, feature: "Model", detail: "\(path) names no material")
+            return nil
+        }
+        guard let material = material(at: materialPath) else { return nil }
+
+        if let puppet = model.puppet {
+            report.add(
+                .degraded, feature: "Puppet warp",
+                detail: "\(puppet) drives bone animation, which is not supported — the layer is drawn undeformed"
+            )
+        }
+        return (material, model)
+    }
+
     public func texture(at path: String, device: any MTLDevice) -> (any MTLTexture)? {
         if let cached = textureCache[path] { return cached }
 

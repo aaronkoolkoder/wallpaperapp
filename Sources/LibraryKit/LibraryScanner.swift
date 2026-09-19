@@ -78,9 +78,7 @@ public struct LibraryScanner: Sendable {
         let manifest = try JSONDecoder().decode(ProjectManifest.self, from: data)
         let fm = FileManager.default
 
-        let contentURL = manifest.file
-            .map { directory.appendingPathComponent($0) }
-            .flatMap { fm.fileExists(atPath: $0.path) ? $0 : nil }
+        let contentURL = Self.resolveContent(in: directory, manifest: manifest)
 
         let previewURL = manifest.preview
             .map { directory.appendingPathComponent($0) }
@@ -103,6 +101,31 @@ public struct LibraryScanner: Sendable {
             modifiedAt: attributes?[.modificationDate] as? Date,
             unplayableReason: Self.unplayableReason(for: manifest, contentURL: contentURL)
         )
+    }
+
+    /// Where a wallpaper's content actually is.
+    ///
+    /// Workshop scenes declare `"file": "scene.json"` but ship only `scene.pkg` — the scene
+    /// document lives *inside* the package. Taking the manifest at its word rejects nearly
+    /// every scene in a real library, which is exactly what it did: 83 of the 114 wallpapers in
+    /// the first real library this was pointed at were reported as "the file scene.json is
+    /// missing". Every scene test before that used a loose `scene.json`, which is what content
+    /// authored locally looks like and what nothing downloaded from the Workshop does.
+    private static func resolveContent(in directory: URL, manifest: ProjectManifest) -> URL? {
+        let fm = FileManager.default
+        func existing(_ name: String) -> URL? {
+            let url = directory.appendingPathComponent(name)
+            return fm.fileExists(atPath: url.path) ? url : nil
+        }
+
+        if let declared = manifest.file, let url = existing(declared) { return url }
+
+        // Packed first: when both are present the package is the shipped content and any loose
+        // file beside it is an override, which `SceneAssets` already layers on top.
+        if manifest.type == .scene {
+            return existing("scene.pkg") ?? existing("scene.json")
+        }
+        return nil
     }
 
     /// Stated in the user's terms, not the format's. "Windows-only" is actionable; a raw enum

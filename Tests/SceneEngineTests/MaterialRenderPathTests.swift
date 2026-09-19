@@ -63,7 +63,7 @@ struct MaterialRenderPathTests {
                        "clearcolor": "0 0 0" },
           "objects": [
             { "image": "materials/layer.json", "name": "marker",
-              "origin": "0 0 0", "size": "64 64", "visible": true }
+              "origin": "32 32 0", "size": "64 64", "visible": true }
           ]
         }
         """
@@ -164,7 +164,8 @@ struct MaterialRenderPathTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let scene = try String(contentsOf: root.appendingPathComponent("scene.json"), encoding: .utf8)
-            .replacingOccurrences(of: "\"origin\": \"0 0 0\"", with: "\"origin\": \"200 0 0\"")
+            // A whole scene-width to the right, so the layer cannot touch the centre pixel.
+            .replacingOccurrences(of: #""origin": "32 32 0""#, with: #""origin": "128 32 0""#)
         try scene.write(
             to: root.appendingPathComponent("scene.json"), atomically: true, encoding: .utf8
         )

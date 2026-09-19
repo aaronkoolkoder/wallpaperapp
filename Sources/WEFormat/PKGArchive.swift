@@ -33,7 +33,7 @@ public struct PKGEntry: Sendable, Hashable {
 ///
 /// ```text
 /// int32   headerVersionLength
-/// char[]  headerVersion          // "PKGV0001" … "PKGV0005", not NUL-terminated
+/// char[]  headerVersion          // "PKGV" + four digits, not NUL-terminated
 /// int32   entryCount
 /// entry × entryCount {
 ///   int32  pathLength
@@ -45,17 +45,29 @@ public struct PKGEntry: Sendable, Hashable {
 /// ```
 public struct PKGArchive: Sendable {
 
-    /// Container revisions this reader accepts.
-    public static let supportedVersions: [String] = [
-        "PKGV0001", "PKGV0002", "PKGV0003", "PKGV0004", "PKGV0005",
-    ]
+    /// Whether this reader will attempt a container revision.
+    ///
+    /// Any `PKGV` revision, rather than a fixed list. A real Workshop library turned out to
+    /// contain every revision from `PKGV0001` to `PKGV0024`, and all of them share the same
+    /// three-field entry record — checked by parsing one of each and confirming the entry
+    /// table lands exactly on the end of the blob. The number tracks the editor's own
+    /// versioning, not the container layout.
+    ///
+    /// Refusing unknown revisions cost 85% of the scenes in that library, so the reader
+    /// validates *structure* instead: paths are normalised and rejected if they could escape,
+    /// offsets and sizes are range-checked against the blob, and duplicates are resolved. A
+    /// revision that genuinely changed layout fails those checks loudly rather than yielding
+    /// garbage, which is the behaviour a version allowlist was there to guarantee anyway.
+    public static func isSupportedVersion(_ version: String) -> Bool {
+        guard version.count == 8, version.hasPrefix("PKGV") else { return false }
+        return version.dropFirst(4).allSatisfy { $0.isASCII && $0.isNumber }
+    }
 
     /// Shape of one entry record for a given container revision.
     ///
-    /// Newer `.pkg` revisions are documented as *adding* fields to the entry record, so
-    /// the reader dispatches on version instead of assuming a fixed stride. Every
-    /// revision from `PKGV0001` to `PKGV0005` that PLAN.md §4.2 describes uses the same
-    /// three-field record, so `trailingInt32Count` is currently `0` throughout.
+    /// Every revision observed in a real Workshop library — `PKGV0001` through `PKGV0024` —
+    /// uses the same three-field record, so `trailingInt32Count` is `0` throughout. The
+    /// dispatch stays because it is where a genuine layout change would be handled.
     ///
     /// - TODO: Unverified. PLAN.md documents one record shape for all five revisions, and
     ///   no real v2–v5 archive was available to confirm it. If a future archive fails with
@@ -94,13 +106,8 @@ public struct PKGArchive: Sendable {
         var reader = BinaryReader(data)
 
         let version = try reader.readLengthPrefixedString()
-        guard Self.supportedVersions.contains(version) else {
-            // Distinguish "not a .pkg at all" from "a .pkg revision we don't decode":
-            // the first is a mis-detected file, the second is a feature request.
-            if version.hasPrefix("PKGV") {
-                throw WEError.unsupportedVersion(version)
-            }
-            throw WEError.badMagic(expected: "PKGV0001…PKGV0005", found: version)
+        guard Self.isSupportedVersion(version) else {
+            throw WEError.badMagic(expected: "PKGV followed by four digits", found: version)
         }
         let layout = Self.entryLayout(for: version)
 
@@ -205,13 +212,13 @@ public struct PKGArchive: Sendable {
 
     // MARK: - Internals
 
+    /// Shape of one entry record.
+    ///
+    /// The same for every revision observed so far (PKGV0001 through PKGV0024). Kept as a
+    /// dispatch point rather than inlined because if a future revision does add a field, this
+    /// is where it goes — and the range checks downstream are what will point at it.
     static func entryLayout(for version: String) -> EntryLayout {
-        switch version {
-        case "PKGV0001", "PKGV0002", "PKGV0003", "PKGV0004", "PKGV0005":
-            return EntryLayout(trailingInt32Count: 0)
-        default:
-            return EntryLayout(trailingInt32Count: 0)
-        }
+        EntryLayout(trailingInt32Count: 0)
     }
 
     /// Normalises an archive path and rejects anything that could escape an extraction

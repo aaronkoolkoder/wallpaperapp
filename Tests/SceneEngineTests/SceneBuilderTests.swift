@@ -59,7 +59,7 @@ struct SceneBuilderTests {
         #expect(abs(matrix.columns.3.y) < 0.001)
     }
 
-    @Test("Projection maps the ortho box onto clip space about the centre")
+    @Test("Projection maps the ortho box onto clip space from its corner")
     func projectionCentred() {
         let scene = RenderableScene(
             layers: [], orthoSize: SIMD2(1920, 1080),
@@ -69,14 +69,19 @@ struct SceneBuilderTests {
         )
         let projection = scene.projectionMatrix
 
-        // Wallpaper Engine puts the scene origin at the centre, so the box is symmetric: a point
-        // at half-width must land exactly on the clip-space edge.
-        let right = projection * SIMD4<Float>(960, 0, 0, 1)
-        #expect(abs(right.x - 1) < 0.001)
-        let top = projection * SIMD4<Float>(0, 540, 0, 1)
-        #expect(abs(top.y - 1) < 0.001)
-        let centre = projection * SIMD4<Float>(0, 0, 0, 1)
+        // Wallpaper Engine measures from a *corner*, so the box spans 0...width, not
+        // -half...+half. Real content proved it: a full-bleed layer in a 1920x1080 scene is
+        // placed at "960 540 0", and reading that as an offset from the middle put every
+        // wallpaper's background in one quadrant.
+        let centre = projection * SIMD4<Float>(960, 540, 0, 1)
         #expect(abs(centre.x) < 0.001 && abs(centre.y) < 0.001)
+
+        let rightEdge = projection * SIMD4<Float>(1920, 540, 0, 1)
+        #expect(abs(rightEdge.x - 1) < 0.001)
+        let leftEdge = projection * SIMD4<Float>(0, 540, 0, 1)
+        #expect(abs(leftEdge.x + 1) < 0.001)
+        let topEdge = projection * SIMD4<Float>(960, 1080, 0, 1)
+        #expect(abs(topEdge.y - 1) < 0.001)
     }
 
     @Test("Builds layers from a scene document and reports what it cannot draw")
