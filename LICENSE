@@ -1,0 +1,42 @@
+Copyright (c) 2026 Aaron Merchant. All rights reserved.
+
+This source code is made available to read. It is not open source, and no licence
+to use it is granted except as set out below.
+
+PERMITTED
+
+  - Reading the source, and quoting short excerpts for discussion, review, or teaching
+    with attribution.
+  - Cloning the repository and building it to run on hardware you own, for your own
+    personal, non-commercial use.
+  - Submitting changes back to this repository. By doing so you grant the copyright
+    holder an unrestricted, perpetual licence to use them.
+
+NOT PERMITTED, without prior written permission
+
+  - Redistributing this software or any derivative of it, in source or binary form.
+  - Publishing it to any application store, package manager, or download site.
+  - Using it, or any substantial part of it, in a commercial product or service.
+  - Removing or altering this notice.
+
+THIRD-PARTY COMPONENTS
+
+  This licence covers the original work in this repository only. Vendored and
+  referenced dependencies carry their own licences, which govern those parts and are
+  not superseded by this file. See THIRD_PARTY.md.
+
+NOT AFFILIATED
+
+  This project is not affiliated with, endorsed by, or connected to Wallpaper Engine,
+  its developer, or Valve Corporation. It bundles no Wallpaper Engine content, code,
+  or branding. Wallpaper Engine is a trademark of its respective owner and is used
+  here only to describe compatibility. See LEGAL.md.
+
+NO WARRANTY
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED,
+  INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+  PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+  ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+  OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+  OTHER DEALINGS IN THE SOFTWARE.

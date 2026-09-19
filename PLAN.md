@@ -165,7 +165,7 @@ A flat archive, not compressed at the container level.
 
 ```
 int32   headerVersionLength
-char[]  headerVersion        // "PKGV0001" … "PKGV0005"
+char[]  headerVersion        // "PKGV" + four digits
 int32   entryCount
 entry × entryCount {
   int32  pathLength
@@ -176,8 +176,16 @@ entry × entryCount {
 byte[]  blob
 ```
 
-Support **PKGV0001 through PKGV0005**. Later versions add fields to the entry record; version-dispatch the entry
-reader rather than assuming a fixed stride.
+**Accept any `PKGV` revision.** The original plan said to support PKGV0001–0005 and assumed later revisions add
+fields to the entry record. A real library of 114 Workshop wallpapers disproved both halves: it contained every
+revision from **PKGV0001 to PKGV0024**, and all of them use the same three-field record — verified by parsing one
+of each and confirming the entry table ends exactly where the blob begins. The version number tracks the editor's
+own releases, not the container layout.
+
+Refusing unseen revisions cost 85% of the scenes in that library, so the reader validates *structure* instead:
+paths normalised and rejected if they could escape, offsets and sizes range-checked against the blob, duplicates
+resolved first-wins. A revision that genuinely changed layout fails those checks loudly rather than yielding
+garbage — which is the guarantee a version allowlist was there to provide.
 
 ### 4.3 `.tex` textures
 
@@ -247,6 +255,21 @@ the territory and a reference for *what the format does*.
 
 - **Objects** are `image`, `sound`, `particle`, or `text`. Each carries transform, visibility, parallax depth, and
   either a material or a particle system.
+- **An `image` object names a model, not a material.** `"image": "models/foo.json"` points at
+  `{"material": "materials/foo.json", "autosize": true}`, which then names the material. Reading the model file as
+  a material finds no passes and silently drops the layer — it cost every scene in the first real library tested,
+  which reported 59 "declares no passes" and rendered one layer between them. A model may also carry a `puppet`
+  `.mdl` skeleton for bone animation, which is reported and ignored.
+- **Coordinates are measured from a corner, not the centre.** A full-bleed layer in a 1920x1080 scene sits at
+  origin `"960 540 0"` — the middle of the box measured from its corner, with Y up. Treating the origin as the
+  centre puts every layer half a screen up and to the right, so a wallpaper renders with its background in one
+  quadrant. This is the single easiest thing to get wrong and the hardest to spot from a code reading.
+- **Workshop scenes ship packed and their manifest lies about it.** `project.json` declares
+  `"file": "scene.json"` while the folder contains only `scene.pkg`, with the scene document inside it. Content
+  authored locally in the editor is the other way round. Resolve the declared name first, then fall back to
+  `scene.pkg`, then to a loose `scene.json`.
+- **A manifest with no `type` but a `dependency` is a *preset***: published settings for somebody else's
+  wallpaper, shipping asset overrides in `files/` and no content of its own.
 - **Materials** reference shaders and textures and declare **passes**; **effects** are ordered chains of passes
   applied to an object's rendered output through ping-ponged framebuffers.
 - **Properties** (`general.properties` in `project.json`) are the per-wallpaper user-configurable settings —

@@ -13,8 +13,13 @@ Maintained from the first commit. See PLAN.md §11 for the clean-room policy.
 ## Vendored dependencies
 
 Fetched and built from source by `Scripts/vendor-shader-tools.sh`, pinned to release tags. Both
-are permissively licensed and compatible with Mac App Store distribution. Neither is redistributed
-in this repository; the script fetches them.
+are permissively licensed and compatible with Mac App Store distribution. Neither is present in the
+working tree; the script fetches them.
+
+One correction for accuracy: an early commit briefly staged ~39 glslang and SPIRV-Cross headers
+before they were untracked and ignored, so they remain in this repository's git *history*. Both
+licences permit redistribution with the licence retained, so this is not a problem — but "never
+redistributed" would be an overstatement and the history is public once this repo is.
 
 ### glslang — BSD-3-Clause / Apache-2.0
 - https://github.com/KhronosGroup/glslang

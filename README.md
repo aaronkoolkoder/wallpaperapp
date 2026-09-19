@@ -1,8 +1,8 @@
 # Diorama
 
-Live wallpapers for macOS Tahoe. Plays **Wallpaper Engine** wallpapers — video, web, and
-(eventually) real Metal-rendered Scene wallpapers — plus ordinary images and GIFs. Fully offline:
-no account, no server, no network.
+Live wallpapers for macOS Tahoe. Plays **Wallpaper Engine** wallpapers — Scene wallpapers rendered
+natively in Metal, plus video, web, images and GIFs. Fully offline: no account, no server, no
+network, and no code in the app that could make one.
 
 > Working codename. Not affiliated with, or endorsed by, Wallpaper Engine or Valve.
 
@@ -30,6 +30,33 @@ binary format specs, milestones, and licensing constraints.
 | M7b — GLSL → Metal, real material and effect shaders | ✅ Done |
 | M7c — per-wallpaper settings, live | ✅ Done |
 | M8 — signing, notarization, release | ⬜ Next |
+
+## Compatibility, measured
+
+Against a real Steam Workshop library of 114 wallpapers — not synthetic fixtures:
+
+| | |
+|---|---|
+| Indexed | 112 of 114 |
+| Playable | 73 |
+| Scenes that open and build layers | **59 of 59** |
+| Layers built across them | 236 |
+| Scenes that fail to open | 0 |
+
+The 39 unplayable ones are honest failures, and the report says which: 36 have no content file
+at all in the folder (only `project.json` and a preview came across), two are settings presets
+for other wallpapers, and one names a video that is not there.
+
+What is still missing is fidelity rather than loading. Materials name Wallpaper Engine's built-in
+shaders — `genericimage2` and includes like `common.h` — which ship with that application rather
+than inside wallpapers, so they fall back to a built-in approximation. Those have to be written
+from the interface rather than bundled; see [LEGAL.md](LEGAL.md).
+
+Run it yourself:
+
+```bash
+swift run -c release wetool report /path/to/431960 --json baseline.json
+```
 
 ## Measured performance
 
@@ -156,15 +183,15 @@ fastest way to debug a scene without one running on your desktop.
 | `LibraryKit` | Import, index, thumbnails |
 | `Diagnostics` | Compatibility reports, performance sampling |
 
-## Licensing
+## Legal, licensing and privacy
+
+Source-available, **not open source** — see [LICENSE](LICENSE). You may read it and build it for
+your own use; redistribution, republishing, and commercial use need permission.
 
 This project deliberately does **not** derive from the GPL-3.0 Wallpaper Engine
-reimplementations, which would rule out App Store distribution. See
-[THIRD_PARTY.md](THIRD_PARTY.md) and PLAN.md §11.
+reimplementations, which would rule out App Store distribution. Run
+`Scripts/verify-dependency.sh` on anything pulled into the project before using it.
 
-Run `Scripts/verify-dependency.sh` on anything pulled into the project before using it.
-
-## Legal and privacy
 
 - [PRIVACY.md](PRIVACY.md) — the whole policy. Nothing leaves your Mac; there is no networking
   code in the app at all.

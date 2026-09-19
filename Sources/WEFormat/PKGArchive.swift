@@ -69,11 +69,11 @@ public struct PKGArchive: Sendable {
     /// uses the same three-field record, so `trailingInt32Count` is `0` throughout. The
     /// dispatch stays because it is where a genuine layout change would be handled.
     ///
-    /// - TODO: Unverified. PLAN.md documents one record shape for all five revisions, and
-    ///   no real v2–v5 archive was available to confirm it. If a future archive fails with
-    ///   an "outside the blob" error while its entry table looks plausible, the likely
-    ///   cause is an extra trailing field in that revision — add it here rather than by
-    ///   loosening the range validation, which exists to catch exactly this mistake.
+    /// Confirmed against one archive of each revision from a real library, so this is no longer
+    /// an assumption. If a future archive fails with an "outside the blob" error while its
+    /// entry table looks plausible, the likely cause is an extra trailing field in that
+    /// revision — add it here rather than by loosening the range validation, which exists to
+    /// catch exactly this mistake.
     struct EntryLayout: Sendable {
         /// Extra `int32` fields following `size` in this revision's entry record.
         let trailingInt32Count: Int
