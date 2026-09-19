@@ -1,4 +1,5 @@
 import Foundation
+import LibraryKit
 import WEFormat
 import os
 
@@ -9,14 +10,14 @@ import os
 /// first time the wallpaper was opened — and a later update to the wallpaper would appear to do
 /// nothing. Clearing a property here restores the author's value rather than storing a copy of it.
 public final class PropertySettingsStore: @unchecked Sendable {
-    private let defaults: UserDefaults
+    private let defaults: any PreferenceStorage
     private let key = "app.diorama.wallpaperProperties"
     private let log = Logger(subsystem: "app.diorama", category: "settings")
 
     /// Wallpaper ID to the properties the user has changed on it.
     private var storage: [String: [String: DynamicValue]]
 
-    public init(defaults: UserDefaults = .standard) {
+    public init(defaults: any PreferenceStorage = UserDefaults.standard) {
         self.defaults = defaults
         storage = Self.load(from: defaults, key: "app.diorama.wallpaperProperties")
     }
@@ -61,7 +62,7 @@ public final class PropertySettingsStore: @unchecked Sendable {
         }
     }
 
-    private static func load(from defaults: UserDefaults, key: String) -> [String: [String: DynamicValue]] {
+    private static func load(from defaults: any PreferenceStorage, key: String) -> [String: [String: DynamicValue]] {
         guard let data = defaults.data(forKey: key) else { return [:] }
         do {
             return try JSONDecoder().decode([String: [String: DynamicValue]].self, from: data)

@@ -46,6 +46,8 @@ func usage() -> Never {
                                          Audit a whole library: what renders,
                                          what does not, and which missing
                                          features affect the most wallpapers
+      wetool library [domain]            Report where the imported library folder
+                                         is and whether it can still be reached
       wetool scene info <wallpaper-dir>  Describe a scene's layers
       wetool scene render <wallpaper-dir> <out.png> [WxH] [px,py]
                                          Render one frame offscreen; px,py is a
@@ -536,6 +538,42 @@ case "shader":
         }
         print(translated.msl)
     } catch { fail("\(error)") }
+
+case "library":
+    // Reports what the app has stored about the user's library folder, and whether it can still
+    // be reached. Deliberately runs from `wetool` rather than the app: the two are signed
+    // separately, so this also exercises the case a security-scoped bookmark cannot survive —
+    // a build whose code signature differs from the one that wrote it.
+    let domain = arguments.count >= 2 ? arguments[1] : "app.diorama.Diorama"
+    guard let defaults = UserDefaults(suiteName: domain) else {
+        fail("could not open the preferences domain \(domain)")
+    }
+    print("domain:     \(domain)")
+    print("sandboxed:  \(LibraryStore.isSandboxed)")
+    print("writes:     \(LibraryStore.bookmarkCreationOptions.isEmpty ? "plain bookmarks" : "security-scoped bookmarks")")
+
+    guard let bookmark = defaults.data(forKey: "libraryBookmark") else {
+        print("bookmark:   none stored — no library has been imported")
+        exit(0)
+    }
+    print("bookmark:   \(bookmark.count) bytes")
+
+    do {
+        let resolved = try LibraryStore.resolveBookmark(bookmark)
+        print("resolves:   yes\(resolved.isStale ? " (stale — will be rewritten on next open)" : "")")
+        print("folder:     \(resolved.url.path)")
+
+        let exists = FileManager.default.fileExists(atPath: resolved.url.path)
+        print("exists:     \(exists)")
+        if exists {
+            let scan = LibraryScanner().scan(root: resolved.url)
+            print("indexed:    \(scan.items.count), playable \(scan.playableCount)")
+        }
+    } catch {
+        print("resolves:   NO — \(error.localizedDescription)")
+        print("            The app will report the folder as lost and ask for it again.")
+        exit(1)
+    }
 
 case "-h", "--help", "help":
     usage()
