@@ -347,6 +347,14 @@ public struct ProjectManifest: Sendable, Hashable, Codable {
     public var tags: [String]
     /// Steam's content rating: `"Everyone"`, `"Questionable"`, `"Mature"`.
     public var contentRating: String?
+
+    /// Workshop ID of the wallpaper this one configures.
+    ///
+    /// Present on *presets*: a published set of settings for somebody else's wallpaper, usually
+    /// an audio visualiser, shipping only overridden assets in `files/` and no content of its
+    /// own. Without this the manifest looks like a wallpaper that forgot to say what type it
+    /// is, and the user gets told exactly that — which is both wrong and unactionable.
+    public var dependency: String?
     public var official: Bool?
     public var visibility: String?
     public var general: WEGeneral?
@@ -359,6 +367,7 @@ public struct ProjectManifest: Sendable, Hashable, Codable {
         preview: String? = nil,
         tags: [String] = [],
         contentRating: String? = nil,
+        dependency: String? = nil,
         official: Bool? = nil,
         visibility: String? = nil,
         general: WEGeneral? = nil
@@ -370,6 +379,7 @@ public struct ProjectManifest: Sendable, Hashable, Codable {
         self.preview = preview
         self.tags = tags
         self.contentRating = contentRating
+        self.dependency = dependency
         self.official = official
         self.visibility = visibility
         self.general = general
@@ -381,6 +391,7 @@ public struct ProjectManifest: Sendable, Hashable, Codable {
     private enum CodingKeys: String, CodingKey {
         case title, description, type, file, preview, tags
         case contentRating = "contentrating"
+        case dependency
         case official, visibility, general
     }
 
@@ -393,6 +404,7 @@ public struct ProjectManifest: Sendable, Hashable, Codable {
         preview = container.lenientString(.preview)
         tags = container.lenientStringArray(.tags) ?? []
         contentRating = container.lenientString(.contentRating)
+        dependency = container.lenientString(.dependency)
         official = container.lenientBool(.official)
         visibility = container.lenientString(.visibility)
         general = container.lenient(WEGeneral.self, .general)

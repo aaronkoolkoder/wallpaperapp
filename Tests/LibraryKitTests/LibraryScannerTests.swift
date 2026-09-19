@@ -171,4 +171,59 @@ struct LibraryScannerTests {
         let result = LibraryScanner().scan(root: URL(fileURLWithPath: "/nope/does/not/exist"))
         #expect(result.items.isEmpty)
     }
+
+    @Test("A settings preset is named as one, not as a wallpaper with no type")
+    func reportsPresets() throws {
+        // A preset publishes settings for somebody else's wallpaper and ships no content of its
+        // own, so it has no `type` and no `file`. "This wallpaper does not say what type it is"
+        // is both wrong and unactionable; the dependency at least points somewhere.
+        let root = try makeLibrary([
+            "4242": #"{"title":"Preset","dependency":"893418273","preset":{"audioprocessing":true}}"#
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let item = try #require(LibraryScanner().scan(root: root).items.first)
+        #expect(!item.isPlayable)
+        #expect(item.unplayableReason?.contains("893418273") == true)
+        #expect(item.unplayableReason?.contains("preset") == true)
+    }
+
+    @Test("A wallpaper with no type and no dependency still says so plainly")
+    func reportsTypelessWallpaper() throws {
+        let root = try makeLibrary(["4243": #"{"title":"Mystery"}"#])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let item = try #require(LibraryScanner().scan(root: root).items.first)
+        #expect(!item.isPlayable)
+        #expect(item.unplayableReason?.contains("does not say what type") == true)
+    }
+
+    @Test("A packed scene is playable even though its declared file is inside the package")
+    func packedSceneIsPlayable() throws {
+        // Workshop scenes declare "scene.json" and ship only "scene.pkg". Taking the manifest
+        // at its word rejected 83 of the 114 wallpapers in a real library.
+        let root = try makeLibrary(["4244": #"{"title":"Packed","type":"scene","file":"scene.json"}"#])
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("not a real package, but present".utf8).write(
+            to: root.appendingPathComponent("4244/scene.pkg")
+        )
+
+        let item = try #require(LibraryScanner().scan(root: root).items.first)
+        #expect(item.isPlayable)
+        #expect(item.contentURL?.lastPathComponent == "scene.pkg")
+    }
+
+    /// Builds a throwaway library from wallpaper ID to manifest JSON.
+    private func makeLibrary(_ wallpapers: [String: String]) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DioramaScan-\(UUID().uuidString)", isDirectory: true)
+        for (id, manifest) in wallpapers {
+            let dir = root.appendingPathComponent(id, isDirectory: true)
+            try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+            try manifest.write(
+                to: dir.appendingPathComponent("project.json"), atomically: true, encoding: .utf8
+            )
+        }
+        return root
+    }
 }

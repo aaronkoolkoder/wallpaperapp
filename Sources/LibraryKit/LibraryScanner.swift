@@ -137,6 +137,13 @@ public struct LibraryScanner: Sendable {
         case .application:
             return "Application wallpapers are Windows programs and cannot run on macOS"
         case .unknown(let raw):
+            // A preset is a published set of settings for somebody else's wallpaper and ships
+            // no content of its own. Telling the user it "does not say what type it is" is both
+            // wrong and unactionable; naming what it needs at least points somewhere.
+            if let dependency = manifest.dependency, !dependency.isEmpty {
+                return "This is a settings preset for another wallpaper (\(dependency)), "
+                    + "which is not supported yet"
+            }
             return raw.isEmpty
                 ? "This wallpaper does not say what type it is"
                 : "Unrecognised wallpaper type \"\(raw)\""
