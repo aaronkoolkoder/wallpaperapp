@@ -102,6 +102,13 @@ final class WallpaperSystemModel {
             self?.reports[displayID] = report
             self?.refresh()
         }
+
+        // Connect captured audio to whatever is playing. Until now the capture ran, asked for
+        // a permission, and threw every frame away: `audioSource` was declared on the scene
+        // backend and never assigned by anybody, so audio reactivity did nothing at all.
+        playback.audioSource = { [audioCapture] in
+            MainActor.assumeIsolated { audioCapture.currentFrame() }
+        }
     }
 
     // MARK: - Snapshot

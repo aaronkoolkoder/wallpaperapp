@@ -1,6 +1,7 @@
 import AppKit
 import Diagnostics
 import Foundation
+import SceneEngine
 import WEFormat
 import WallpaperKit
 
@@ -50,10 +51,16 @@ public struct WallpaperRequest: Sendable {
     /// author later changes is picked up rather than pinned to whatever it was on first run.
     public let properties: [String: DynamicValue]
 
+    /// The wallpaper's declared properties, for the web bridge to hand to a page's
+    /// `wallpaperPropertyListener`. Declarations rather than overrides: a web wallpaper expects
+    /// the full set with their current values, not just what the user has touched.
+    public let webProperties: [String: WEProperty]
+
     public init(
         id: String, kind: WallpaperKind, contentURL: URL, baseURL: URL,
         loops: Bool = true, isMuted: Bool = true,
-        properties: [String: DynamicValue] = [:]
+        properties: [String: DynamicValue] = [:],
+        webProperties: [String: WEProperty] = [:]
     ) {
         self.id = id
         self.kind = kind
@@ -62,6 +69,7 @@ public struct WallpaperRequest: Sendable {
         self.loops = loops
         self.isMuted = isMuted
         self.properties = properties
+        self.webProperties = webProperties
     }
 }
 
@@ -97,6 +105,12 @@ public protocol WallpaperBackend: AnyObject {
     /// Suspend or resume without tearing down. Called when the power policy flips.
     func setPaused(_ paused: Bool)
 
+    /// Hand the backend a way to read the latest analysed system audio.
+    ///
+    /// Pulled rather than pushed, so a backend samples it at whatever rate it actually draws at
+    /// instead of being interrupted at audio rate.
+    func setAudioSource(_ source: (() -> AudioFrame)?)
+
     /// Frames drawn since this backend started, for diagnostics.
     ///
     /// Whether a wallpaper is *animating* is otherwise unobservable from outside the render
@@ -120,6 +134,9 @@ public extension WallpaperBackend {
     /// Only the Metal-rendered backend counts frames; the rest present through AppKit layers
     /// that do their own scheduling.
     var framesRendered: UInt64 { 0 }
+
+    /// Most kinds have nothing to react with.
+    func setAudioSource(_ source: (() -> AudioFrame)?) {}
 }
 
 public enum BackendError: Error, LocalizedError {

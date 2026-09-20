@@ -27,6 +27,8 @@ public final class SceneBackend: WallpaperBackend {
 
     /// Supplied by the app when audio reactivity is on; nil leaves scenes silent-driven.
     public var audioSource: (() -> AudioFrame)?
+
+    public func setAudioSource(_ source: (() -> AudioFrame)?) { audioSource = source }
     private let log = Logger(subsystem: "app.diorama", category: "scene")
 
     /// Outlives individual wallpapers so translation is paid for once per shader rather than

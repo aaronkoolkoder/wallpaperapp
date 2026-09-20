@@ -1,6 +1,7 @@
 import AppKit
 import Diagnostics
 import Foundation
+import SceneEngine
 import WallpaperKit
 import WebKit
 import os
@@ -22,7 +23,15 @@ public final class WebBackend: NSObject, WallpaperBackend {
     public private(set) var report: CompatibilityReport
 
     private var webView: WKWebView?
+    private var audioSource: (() -> AudioFrame)?
+    private var audioTimer: Timer?
     private let log = Logger(subsystem: "app.diorama", category: "web")
+
+    /// How often analysed audio is handed to the page.
+    ///
+    /// 30Hz rather than per display refresh: a visualiser redraws on its own animation frame
+    /// and only needs the numbers to be current, and evaluating JavaScript is not free.
+    private static let audioUpdatesPerSecond = 30.0
 
     public override init() {
         report = CompatibilityReport(wallpaperID: "")
@@ -39,9 +48,21 @@ public final class WebBackend: NSObject, WallpaperBackend {
 
         let configuration = WKWebViewConfiguration()
         configuration.suppressesIncrementalRendering = true
-        // Wallpapers are silent unless the user asks otherwise.
-        configuration.mediaTypesRequiringUserActionForPlayback = request.isMuted ? .all : []
+        // Autoplay is always allowed, and silence is achieved by muting the elements instead.
+        // `mediaTypesRequiringUserActionForPlayback` gates video as well as audio, and every
+        // web wallpaper in the first real library tested uses video as its background — so
+        // "muted" stopped them animating at all rather than merely stopping the sound.
+        configuration.mediaTypesRequiringUserActionForPlayback = []
         configuration.websiteDataStore = .nonPersistent()
+
+        // The host API a web wallpaper is written against, in place before any of its own
+        // scripts run. Without it, the first call to `wallpaperRegisterAudioListener` throws
+        // and the wallpaper's script stops there.
+        configuration.userContentController.addUserScript(
+            WebWallpaperBridge.userScript(
+                properties: request.webProperties, isMuted: request.isMuted
+            )
+        )
 
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
@@ -59,9 +80,42 @@ public final class WebBackend: NSObject, WallpaperBackend {
     }
 
     public func stop() {
+        audioTimer?.invalidate()
+        audioTimer = nil
         webView?.stopLoading()
         webView?.navigationDelegate = nil
         webView = nil
+    }
+
+    public func setAudioSource(_ source: (() -> AudioFrame)?) {
+        audioSource = source
+        audioTimer?.invalidate()
+        audioTimer = nil
+        guard source != nil else { return }
+
+        // The bridge pushes silence on its own when nothing else does, so this takes over from
+        // that rather than adding a second stream of frames.
+        let timer = Timer.scheduledTimer(
+            withTimeInterval: 1 / Self.audioUpdatesPerSecond, repeats: true
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.pushAudio() }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        audioTimer = timer
+    }
+
+    /// Hands the page one frame of spectrum data in the shape its listeners expect.
+    ///
+    /// Wallpaper Engine delivers 128 floats: 64 bands for the left channel then 64 for the
+    /// right, which is exactly what the analyser already produces.
+    private func pushAudio() {
+        guard let webView, let frame = audioSource?() else { return }
+        let values = (frame.left + frame.right)
+            .map { String(format: "%.4f", $0.isFinite ? $0 : 0) }
+            .joined(separator: ",")
+        webView.evaluateJavaScript(
+            "window.__dioramaAudioLive = true; window.__dioramaPushAudio([" + values + "]);"
+        )
     }
 
     public func setPaused(_ paused: Bool) {

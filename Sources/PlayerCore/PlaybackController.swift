@@ -3,6 +3,7 @@ import CoreGraphics
 import Diagnostics
 import Foundation
 import LibraryKit
+import SceneEngine
 import WEFormat
 import WallpaperKit
 import os
@@ -56,6 +57,16 @@ public final class PlaybackController {
         let properties = propertySettings.properties(for: wallpaperID)
         for (display, item) in assignments where item.id == wallpaperID {
             backends[display]?.applyProperties(properties)
+        }
+    }
+
+    /// Where backends read analysed system audio from, when the user has turned reactivity on.
+    ///
+    /// Held here rather than passed at construction because it is toggled while wallpapers are
+    /// already playing, and every running backend has to pick the change up.
+    public var audioSource: (() -> AudioFrame)? {
+        didSet {
+            for backend in backends.values { backend.setAudioSource(audioSource) }
         }
     }
 
@@ -132,10 +143,17 @@ public final class PlaybackController {
             kind: resolved.kind,
             contentURL: resolved.url,
             baseURL: item.directory,
-            properties: propertySettings.properties(for: item.id)
+            properties: propertySettings.properties(for: item.id),
+            // A web wallpaper is handed its declared properties with the user's changes folded
+            // in, because its listener expects the whole set rather than a diff.
+            webProperties: Self.webProperties(
+                declared: item.properties,
+                overrides: propertySettings.properties(for: item.id)
+            )
         )
 
         surface.needsDisplayLink = type(of: backend).needsDisplayLink
+        backend.setAudioSource(audioSource)
 
         do {
             try backend.start(request, on: surface)
@@ -196,6 +214,23 @@ public final class PlaybackController {
     ///
     /// Scenes render natively as of M4. A scene that fails to load still reports why through the
     /// compatibility report rather than silently showing black.
+    /// A wallpaper's declared properties with the user's changes applied to their values.
+    static func webProperties(
+        declared: [String: WEProperty],
+        overrides: [String: DynamicValue]
+    ) -> [String: WEProperty] {
+        guard !overrides.isEmpty else { return declared }
+        var merged = declared
+        for (key, value) in overrides {
+            // Only keys the wallpaper actually declares: inventing one would hand its listener
+            // a property it has no code to apply.
+            guard var property = merged[key] else { continue }
+            property.value = value
+            merged[key] = property
+        }
+        return merged
+    }
+
     static func resolvePlayback(for item: WallpaperItem, contentURL: URL) -> ResolvedPlayback {
         let kind: WallpaperKind = switch item.type {
         case .video: .video
