@@ -1,4 +1,5 @@
 import AppKit
+import Metal
 import QuartzCore
 
 /// A layer-backed view whose backing layer is a `CAMetalLayer`.
@@ -32,8 +33,20 @@ public final class MetalLayerView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("not used; this view is never loaded from a nib") }
 
+    /// The GPU the layer vends drawables from.
+    ///
+    /// Set before the layer is first asked for one. A `CAMetalLayer` with no `device` returns
+    /// nil from `nextDrawable()` every single time, silently — which meant scenes never drew a
+    /// frame to the desktop at all, while videos were unaffected because they do not use a
+    /// Metal layer. Offscreen rendering did not catch it either: that path makes its own
+    /// texture and never touches a `CAMetalLayer`.
+    public var metalDevice: (any MTLDevice)? {
+        didSet { metalLayer?.device = metalDevice }
+    }
+
     public override func makeBackingLayer() -> CALayer {
         let layer = CAMetalLayer()
+        layer.device = metalDevice ?? MTLCreateSystemDefaultDevice()
         layer.pixelFormat = .bgra8Unorm
         layer.framebufferOnly = true
         layer.isOpaque = true

@@ -65,7 +65,7 @@ public final class SceneBackend: WallpaperBackend {
             )
         }
 
-        guard let metalLayer = surface.mountMetalLayer() else {
+        guard let metalLayer = surface.mountMetalLayer(device: renderDevice.device) else {
             throw BackendError.contentUnreadable(
                 request.contentURL, underlying: "could not attach a Metal layer to the display"
             )
@@ -95,6 +95,26 @@ public final class SceneBackend: WallpaperBackend {
         // One frame is enough: a Metal layer keeps its last drawable, so a suspended scene sits
         // there as a still image — which is the behaviour PLAN.md §6.1 already measures at 0%.
         renderer.render(to: metalLayer)
+
+        // Checked rather than assumed. The whole failure this guards against is silent — a
+        // dropped first frame looks exactly like a working suspended wallpaper — so if it
+        // happens again it should say so instead of leaving somebody to report a black desktop.
+        if renderer.framesRendered == 0 {
+            let size = metalLayer.drawableSize
+            log.error(
+                """
+                scene \(request.id, privacy: .public) drew no first frame \
+                (drawable \(Int(size.width))x\(Int(size.height))); \
+                the desktop will stay black until it is uncovered
+                """
+            )
+            report.add(
+                .degraded, feature: "Scene",
+                detail: "first frame not drawn (\(renderer.lastOutcome.rawValue), drawable \(Int(size.width))x\(Int(size.height)), "
+                    + "layer \(metalLayer.superlayer == nil ? "unattached" : "attached")); "
+                    + "the wallpaper may not appear until the desktop is uncovered"
+            )
+        }
 
         log.info("scene started: \(scene.layers.count) layer(s) for \(request.id, privacy: .public)")
     }

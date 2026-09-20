@@ -1,4 +1,5 @@
 import AppKit
+import Diagnostics
 import LibraryKit
 import Metal
 import PlayerCore
@@ -180,9 +181,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let baseline = Self.residentBytes()
         print("stress baseline: \(Self.format(baseline))")
 
+        // Counted and printed rather than logged: this process's os_log output does not reach
+        // `log show` from a plain binary launch, so a logged-only count cannot be checked.
+        var scenesPlayed = 0
+        var blankFirstFrames = 0
+        var firstFrameDetails: Set<String> = []
+
         for cycle in 1 ... cycles {
             for item in playable {
-                play(item)
+                let reports = playAndReport(item)
+                if item.type == .scene {
+                    scenesPlayed += reports.count
+                    for report in reports {
+                        for finding in report.findings
+                        where finding.detail?.contains("first frame") == true {
+                            blankFirstFrames += 1
+                            if let detail = finding.detail { firstFrameDetails.insert(detail) }
+                        }
+                    }
+                }
                 try? await Task.sleep(for: .milliseconds(220))
             }
             playback?.stopAll()
@@ -195,7 +212,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 + "(\(delta >= 0 ? "+" : "")\(Self.format(UInt64(abs(delta)))) vs baseline)"
             )
         }
+
+        print("scenes played: \(scenesPlayed), blank first frames: \(blankFirstFrames)")
+        for detail in firstFrameDetails.prefix(3) { print("  \(detail)") }
         NSApp.terminate(nil)
+    }
+
+    /// Like `play`, but hands back what each display reported.
+    @discardableResult
+    private func playAndReport(_ item: WallpaperItem) -> [CompatibilityReport] {
+        defer { model?.refresh() }
+        guard let playback else { return [] }
+        return coordinator.surfaces.keys.map { playback.play(item, on: $0) }
     }
 
     private static func residentBytes() -> UInt64 {

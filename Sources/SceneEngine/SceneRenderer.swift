@@ -119,9 +119,24 @@ public final class SceneRenderer {
         )
     }
 
+    /// Why the last `render(to:)` did or did not produce a frame.
+    ///
+    /// Every way this function gives up is a silent one — the desktop simply stays as it was —
+    /// so the reason is recorded rather than inferred. A scene that never draws its first frame
+    /// looks identical to a working suspended wallpaper from the outside.
+    public enum RenderOutcome: String, Sendable {
+        case rendered
+        case noScene
+        case noDrawable
+        case noCommandBuffer
+        case noEncoder
+    }
+
+    public private(set) var lastOutcome: RenderOutcome = .noScene
+
     public func render(to layer: CAMetalLayer, timestamp: CFTimeInterval = CACurrentMediaTime()) {
-        guard let scene else { return }
-        guard let drawable = layer.nextDrawable() else { return }
+        guard let scene else { lastOutcome = .noScene; return }
+        guard let drawable = layer.nextDrawable() else { lastOutcome = .noDrawable; return }
 
         clock.advance(to: timestamp)
         camera.setPointer(normalized: pointer)
@@ -142,7 +157,10 @@ public final class SceneRenderer {
 
         // The encoder is created inside whichever path runs. Creating one here and leaving it
         // unended on the effects path is a Metal API violation, not merely wasteful.
-        guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else { return }
+        guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else {
+            lastOutcome = .noCommandBuffer
+            return
+        }
 
         // Aspect-fill the scene's ortho box into the drawable. Letterboxing a wallpaper would
         // show bars at the edges of the desktop, which is never what anyone wants.
@@ -158,6 +176,7 @@ public final class SceneRenderer {
             // Fast path. Most scenes have no post-processing, and routing them through an
             // intermediate target would cost a full-frame copy for nothing.
             guard let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+                lastOutcome = .noEncoder
                 return
             }
             buildDraws(scene: scene, cameraOffset: cameraOffset, into: &drawScratch)
@@ -181,6 +200,7 @@ public final class SceneRenderer {
 
         pool.endFrame()
         framesRendered &+= 1
+        lastOutcome = .rendered
     }
 
     /// Encodes draws in order, switching between the built-in shader and each material's own.

@@ -123,16 +123,27 @@ public final class DesktopSurface {
 
     /// Mount a Metal-backed view and return its layer. Idempotent.
     @discardableResult
-    public func mountMetalLayer() -> CAMetalLayer? {
-        if let existing = view as? MetalLayerView { return existing.metalLayer }
+    /// - Parameter device: the GPU the renderer will draw with. It must be the same one the
+    ///   layer vends drawables from, and a layer with no device vends none at all.
+    public func mountMetalLayer(device: (any MTLDevice)? = nil) -> CAMetalLayer? {
+        if let existing = view as? MetalLayerView {
+            if let device { existing.metalDevice = device }
+            return existing.metalLayer
+        }
 
         let metalView = MetalLayerView(frame: NSRect(origin: .zero, size: screen.frame.size))
+        metalView.metalDevice = device ?? MTLCreateSystemDefaultDevice()
         metalView.resolutionScale = resolutionScale
         metalView.onDrawableSizeChange = { [weak self] size in self?.onDrawableSizeChange?(size) }
         mount(metalView)
         // Only after mounting, which is what gives the view a window to take a scale factor
         // from. Without this the caller's first render can find a zero-sized drawable.
         metalView.prepareDrawable()
+        // Commit the layer tree before anyone asks it for a drawable. A `CAMetalLayer` that has
+        // only just been made a window's content layer has not been through a transaction yet,
+        // and `nextDrawable()` on one returns nil — which silently drops the caller's first
+        // frame.
+        CATransaction.flush()
         return metalView.metalLayer
     }
 
