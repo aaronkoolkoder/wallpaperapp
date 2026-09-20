@@ -14,7 +14,10 @@ struct TEXBuilder {
     var textureHeight: Int32 = 4
     var imageWidth: Int32 = 4
     var imageHeight: Int32 = 4
-    var freeImageFormat: Int32 = 0
+    /// -1 means "no FreeImage format", i.e. the mipmaps hold raw or LZ4-compressed pixels.
+    /// A value of 0 or above means each level is an encoded image file — 2 is JPEG, 13 is PNG.
+    /// Defaulting to 0 made every fixture claim to be a BMP, which is not what a raw texture is.
+    var freeImageFormat: Int32 = -1
     var mipmaps: [(w: Int32, h: Int32, payload: Data, compress: Bool)] = []
     var spriteSheet: (version: String, frames: [[Float]])?
 
@@ -235,7 +238,8 @@ struct TEXTextureTests {
         data.appendInt32(4); data.appendInt32(4)
         data.appendInt32(0)
         data.appendMagic("TEXB0003")
-        data.appendInt32(0); data.appendInt32(0)
+        data.appendInt32(0)
+        data.appendInt32(-1)             // freeImageFormat: raw pixels, not an encoded image
         data.appendInt32(1)
         data.appendInt32(4); data.appendInt32(4)
         data.appendInt32(1)              // compressed
@@ -292,5 +296,60 @@ struct TEXTextureTests {
     @Test("An empty buffer fails cleanly")
     func emptyBuffer() {
         #expect(throws: (any Error).self) { try TEXTexture(data: Data()) }
+    }
+
+    @Test("A FreeImage-encoded mipmap is kept as a file, not read as pixels")
+    func acceptsEncodedMipmap() throws {
+        // Wallpaper Engine stores plenty of textures as a PNG or JPEG per level. Such a level
+        // declares uncompressedSize 0 because the field does not apply — the byte count is the
+        // file's. Treating that as corruption rejected 29 of the 77 textures in a real library.
+        var builder = TEXBuilder()
+        builder.freeImageFormat = 13          // FreeImage's PNG
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3, 4])
+        builder.mipmaps = [(w: 4, h: 4, payload: png, compress: false)]
+        // An encoded level stores its length in compressedSize and leaves uncompressedSize 0,
+        // which the builder does not model, so the bytes are laid out here directly.
+        var data = Data()
+        data.appendMagic("TEXV0005"); data.appendMagic("TEXI0001")
+        data.appendInt32(0); data.appendInt32(0)
+        data.appendInt32(4); data.appendInt32(4)
+        data.appendInt32(4); data.appendInt32(4)
+        data.appendInt32(0)
+        data.appendMagic("TEXB0003")
+        data.appendInt32(0)
+        data.appendInt32(13)                  // freeImageFormat: PNG
+        data.appendInt32(1)                   // one mipmap
+        data.appendInt32(4); data.appendInt32(4)
+        data.appendInt32(0)                   // not LZ4
+        data.appendInt32(0)                   // uncompressedSize: does not apply
+        data.appendInt32(Int32(png.count))    // the file's length
+        data.append(png)
+
+        let texture = try TEXTexture(data: data)
+        let mip = try #require(texture.mipmaps.first)
+        #expect(mip.isEncodedImage)
+        #expect(mip.data == png)
+    }
+
+    @Test("A raw mipmap is still rejected when it declares no size")
+    func stillRejectsSizelessRawMipmap() throws {
+        // The relaxation must apply only to encoded levels. A raw one claiming zero bytes is
+        // still corrupt, and letting it through would hand the loader an empty pixel buffer.
+        var data = Data()
+        data.appendMagic("TEXV0005"); data.appendMagic("TEXI0001")
+        data.appendInt32(0); data.appendInt32(0)
+        data.appendInt32(4); data.appendInt32(4)
+        data.appendInt32(4); data.appendInt32(4)
+        data.appendInt32(0)
+        data.appendMagic("TEXB0003")
+        data.appendInt32(0)
+        data.appendInt32(-1)                  // no FreeImage format: raw pixels
+        data.appendInt32(1)
+        data.appendInt32(4); data.appendInt32(4)
+        data.appendInt32(0)
+        data.appendInt32(0)                   // uncompressedSize 0 on a raw level: corrupt
+        data.appendInt32(0)
+
+        #expect(throws: WEError.self) { try TEXTexture(data: data) }
     }
 }

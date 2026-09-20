@@ -46,12 +46,25 @@ public struct TextureMipmap: Sendable, Hashable {
     /// Whether this level arrived as an LZ4 block. Kept for diagnostics; `data` is
     /// decompressed either way.
     public let wasCompressed: Bool
+
+    /// True when `data` is an encoded image file — PNG or JPEG — rather than raw pixels.
+    ///
+    /// Wallpaper Engine stores plenty of textures this way, flagged by `freeImageFormat` in the
+    /// `TEXB0003` header. Such a level declares `uncompressedSize` 0, because the field does not
+    /// apply: the byte count is the file's. Treating that as corruption rejected 38% of the
+    /// textures in a real library.
+    public let isEncodedImage: Bool
+
     public let data: Data
 
-    public init(width: Int, height: Int, wasCompressed: Bool, data: Data) {
+    public init(
+        width: Int, height: Int, wasCompressed: Bool,
+        isEncodedImage: Bool = false, data: Data
+    ) {
         self.width = width
         self.height = height
         self.wasCompressed = wasCompressed
+        self.isEncodedImage = isEncodedImage
         self.data = data
     }
 }
@@ -266,7 +279,12 @@ public struct TEXTexture: Sendable {
             let uncompressedSizeField = try reader.readInt32()
             let compressedSizeField = try reader.readInt32()
 
-            guard uncompressedSizeField > 0 else {
+            // A FreeImage-encoded level carries a PNG or JPEG file rather than pixels, so
+            // `uncompressedSize` does not apply and is stored as 0. `freeImageFormat` is -1
+            // when the payload really is raw or LZ4-compressed pixels.
+            let isEncodedImage = (freeImageFormat ?? -1) >= 0
+
+            guard isEncodedImage || uncompressedSizeField > 0 else {
                 throw WEError.corruptField("mipmap \(level) declares uncompressedSize \(uncompressedSizeField)")
             }
             guard compressedSizeField >= 0 else {
@@ -281,7 +299,14 @@ public struct TEXTexture: Sendable {
             // `uncompressedSize` for a raw one — an uncompressed level leaves
             // `compressedSize` either zero or a copy of the uncompressed size.
             let payload: Data
-            if isCompressed {
+            if isEncodedImage {
+                // The whole file, verbatim. Decoding is the texture loader's job — it has
+                // ImageIO and knows what pixel format the GPU wants.
+                guard compressedSizeField > 0 else {
+                    throw WEError.corruptField("mipmap \(level) is an encoded image of 0 bytes")
+                }
+                payload = try reader.readBytes(count: Int(compressedSizeField))
+            } else if isCompressed {
                 guard compressedSizeField > 0 else {
                     throw WEError.corruptField("mipmap \(level) is flagged compressed but is 0 bytes")
                 }
@@ -297,7 +322,10 @@ public struct TEXTexture: Sendable {
             }
 
             mipmaps.append(
-                TextureMipmap(width: width, height: height, wasCompressed: isCompressed, data: payload)
+                TextureMipmap(
+                    width: width, height: height, wasCompressed: isCompressed,
+                    isEncodedImage: isEncodedImage, data: payload
+                )
             )
         }
 

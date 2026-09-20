@@ -226,4 +226,31 @@ struct LibraryScannerTests {
         }
         return root
     }
+
+    @Test("Choosing a single wallpaper finds the library it sits in")
+    func resolvesUpFromOneWallpaper() throws {
+        // An open panel full of numbered directories makes this easy to do by accident, and the
+        // old behaviour was to index zero wallpapers and say nothing — the app looked broken
+        // rather than misaimed. Reported from a real session exactly that way.
+        let root = try makeLibrary([
+            "111": #"{"title":"One","type":"scene","file":"scene.json"}"#,
+            "222": #"{"title":"Two","type":"scene","file":"scene.json"}"#,
+        ])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let scanner = LibraryScanner()
+        let resolved = scanner.resolveRoot(from: root.appendingPathComponent("111"))
+        #expect(resolved.standardizedFileURL == root.standardizedFileURL)
+        #expect(scanner.scan(root: root.appendingPathComponent("111")).items.count == 2)
+    }
+
+    @Test("Choosing the library itself is left alone")
+    func leavesLibraryRootAlone() throws {
+        // The walk-up must not fire on a folder that merely contains wallpapers.
+        let root = try makeLibrary(["111": #"{"title":"One","type":"scene"}"#])
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        #expect(LibraryScanner().resolveRoot(from: root).standardizedFileURL
+            == root.standardizedFileURL)
+    }
 }

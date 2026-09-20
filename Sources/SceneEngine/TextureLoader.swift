@@ -1,4 +1,6 @@
+import CoreGraphics
 import Foundation
+import ImageIO
 import Metal
 import WEFormat
 import os
@@ -20,9 +22,12 @@ public struct TextureLoader: Sendable {
         case unsupportedFormat(Int32)
         case blockCompressionUnavailable(String)
         case allocationFailed
+        /// A PNG or JPEG mipmap that ImageIO would not decode.
+        case undecodableImage(String)
 
         public var errorDescription: String? {
             switch self {
+            case .undecodableImage(let name): "\(name) holds an image macOS could not decode"
             case .noMipmaps: "The texture contains no image data"
             case .unsupportedFormat(let raw): "Unsupported texture format \(raw)"
             case .blockCompressionUnavailable(let name):
@@ -69,12 +74,84 @@ public struct TextureLoader: Sendable {
         }
     }
 
+    /// Decodes a PNG or JPEG mipmap and uploads it.
+    ///
+    /// Only the base level: the encoded levels are separate files and decoding all of them costs
+    /// more than letting Metal generate the chain, which it does from the base.
+    private func makeTextureFromEncodedImage(
+        _ mip: TextureMipmap,
+        device: any MTLDevice,
+        label: String?
+    ) throws -> any MTLTexture {
+        guard let source = CGImageSourceCreateWithData(mip.data as CFData, nil),
+              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+        else {
+            throw LoadError.undecodableImage(label ?? "texture")
+        }
+
+        let width = image.width
+        let height = image.height
+        guard width > 0, height > 0, width <= 16384, height <= 16384 else {
+            throw LoadError.undecodableImage(label ?? "texture")
+        }
+
+        // Drawn into a known layout rather than trusting whatever the file happened to use:
+        // PNGs arrive as palettised, 16-bit, greyscale and every other shape ImageIO supports,
+        // and Metal wants one of them.
+        let bytesPerRow = width * 4
+        var pixels = [UInt8](repeating: 0, count: bytesPerRow * height)
+        let colourSpace = CGColorSpaceCreateDeviceRGB()
+        let info = CGImageAlphaInfo.premultipliedFirst.rawValue
+            | CGBitmapInfo.byteOrder32Little.rawValue
+
+        let drawn: Bool = pixels.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress,
+                width: width, height: height,
+                bitsPerComponent: 8, bytesPerRow: bytesPerRow,
+                space: colourSpace, bitmapInfo: info
+            ) else { return false }
+            context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+            return true
+        }
+        guard drawn else { throw LoadError.undecodableImage(label ?? "texture") }
+
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+        )
+        descriptor.usage = .shaderRead
+        descriptor.storageMode = .managed
+
+        guard let metalTexture = device.makeTexture(descriptor: descriptor) else {
+            throw LoadError.allocationFailed
+        }
+        metalTexture.label = label
+        pixels.withUnsafeBytes { raw in
+            metalTexture.replace(
+                region: MTLRegionMake2D(0, 0, width, height),
+                mipmapLevel: 0,
+                withBytes: raw.baseAddress!,
+                bytesPerRow: bytesPerRow
+            )
+        }
+        return metalTexture
+    }
+
     public func makeTexture(
         from texture: TEXTexture,
         device: any MTLDevice,
         label: String? = nil
     ) throws -> any MTLTexture {
         guard let base = texture.mipmaps.first else { throw LoadError.noMipmaps }
+
+        // A FreeImage-encoded texture holds a PNG or JPEG per level rather than pixels, and its
+        // declared `format` describes what the pixels *will* be once decoded, not what is
+        // stored. ImageIO does the decoding; the rest of this function would read the file
+        // bytes as though they were a pixel buffer.
+        if base.isEncodedImage {
+            return try makeTextureFromEncodedImage(base, device: device, label: label)
+        }
+
         guard let format = texture.format else {
             throw LoadError.unsupportedFormat(texture.rawFormat)
         }

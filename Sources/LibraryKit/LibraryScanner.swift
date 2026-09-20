@@ -32,6 +32,15 @@ public struct LibraryScanner: Sendable {
             .appendingPathComponent(Self.wallpaperEngineAppID)
         if fm.fileExists(atPath: nested.path) { return nested }
 
+        // Picked a single wallpaper rather than the folder holding them. An open panel full of
+        // numbered directories makes that easy to do, and the old behaviour was to index zero
+        // wallpapers and say nothing — the app looked broken rather than misaimed. A folder
+        // with its own project.json *is* a wallpaper, so the library is its parent.
+        if fm.fileExists(atPath: url.appendingPathComponent("project.json").path) {
+            let parent = url.deletingLastPathComponent()
+            if parent.path != url.path { return parent }
+        }
+
         return url
     }
 
