@@ -126,6 +126,8 @@ public final class SceneBackend: WallpaperBackend {
         isPaused = false
     }
 
+    public var framesRendered: UInt64 { renderer?.framesRendered ?? 0 }
+
     public func setPaused(_ paused: Bool) {
         isPaused = paused
     }
@@ -157,5 +159,4 @@ public final class SceneBackend: WallpaperBackend {
     }
 
     public var layerCount: Int { renderer?.scene?.layers.count ?? 0 }
-    public var framesRendered: UInt64 { renderer?.framesRendered ?? 0 }
 }

@@ -214,6 +214,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         print("scenes played: \(scenesPlayed), blank first frames: \(blankFirstFrames)")
+
+        // Whether a wallpaper *animates* is the other half, and just as unobservable: a scene
+        // stuck on its first frame looks exactly like one running on still content. Play one,
+        // hold, and see whether the frame count moves.
+        if let last = playable.last(where: { $0.type == .scene }), let playback {
+            playAndReport(last)
+            try? await Task.sleep(for: .milliseconds(400))
+            let first = coordinator.surfaces.keys.map { playback.framesRendered(on: $0) }
+            try? await Task.sleep(for: .seconds(2))
+            for display in coordinator.surfaces.keys.sorted() {
+                let now = playback.framesRendered(on: display)
+                let before = first.first ?? 0
+                print(
+                    "animation on \(display): \(before) -> \(now) frames over 2s, "
+                    + "suspended=\(playback.isSuspended(on: display))"
+                )
+            }
+        }
         for detail in firstFrameDetails.prefix(3) { print("  \(detail)") }
         NSApp.terminate(nil)
     }

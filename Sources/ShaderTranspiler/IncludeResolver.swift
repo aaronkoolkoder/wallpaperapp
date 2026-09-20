@@ -164,17 +164,60 @@ public struct IncludeResolver: Sendable {
     /// real content turns out to rely on include-once, flip this default.
     public var includeOnce: Bool
 
-    public init(maxDepth: Int = IncludeResolver.defaultMaxDepth, includeOnce: Bool = false) {
+    /// Files expanded at most once regardless of `includeOnce`.
+    ///
+    /// Holds the implicit common header, which the preprocessor prepends to every shader.
+    public var alwaysOnce: Set<String>
+
+    public init(
+        maxDepth: Int = IncludeResolver.defaultMaxDepth,
+        includeOnce: Bool = false,
+        alwaysOnce: Set<String> = ["common.h"]
+    ) {
         self.maxDepth = max(0, maxDepth)
         self.includeOnce = includeOnce
+        self.alwaysOnce = Set(alwaysOnce.map(IncludeResolver.canonicalKey))
     }
 
-    public func resolve(_ source: ShaderSource, provider: ShaderFileProvider) throws -> ResolvedShaderSource {
+    /// - Parameter prelude: files expanded ahead of `source`, as Wallpaper Engine's compiler
+    ///   prepends its common header. They are expanded *before* the source and registered as
+    ///   already-seen, so the source's own line numbers are untouched — prepending an
+    ///   `#include` line to the text instead shifts every one of them by one, and every
+    ///   compiler error then points at the line after the real one.
+    public func resolve(
+        _ source: ShaderSource,
+        provider: ShaderFileProvider,
+        prelude: [String] = []
+    ) throws -> ResolvedShaderSource {
         var lines: [String] = []
         var lineMap: [SourceLocation] = []
         var included: [String] = []
         var alreadyExpanded: Set<String> = []
         var stack: [String] = []
+
+        for name in prelude {
+            let text: String
+            if let provided = try? provider.contents(of: name) {
+                text = provided
+            } else if let builtin = BuiltinShaderLibrary.header(named: name) {
+                text = builtin
+            } else {
+                continue
+            }
+            try expand(
+                text: text,
+                file: name,
+                provider: provider,
+                depth: 0,
+                stack: &stack,
+                lines: &lines,
+                lineMap: &lineMap,
+                included: &included,
+                alreadyExpanded: &alreadyExpanded
+            )
+            alreadyExpanded.insert(Self.canonicalKey(name))
+            if !included.contains(name) { included.append(name) }
+        }
 
         try expand(
             text: source.text,
@@ -231,7 +274,12 @@ public struct IncludeResolver: Sendable {
             }
 
             let targetKey = Self.canonicalKey(target)
-            if includeOnce, alreadyExpanded.contains(targetKey) {
+            // The implicit header is always include-once, whatever the resolver's general
+            // policy. It is prepended to every shader, so a wallpaper that also includes it by
+            // name would get it twice — and a copy without an include guard, which shipped ones
+            // routinely lack, then redefines every function in it.
+            let isImplicit = alwaysOnce.contains(targetKey)
+            if includeOnce || isImplicit, alreadyExpanded.contains(targetKey) {
                 // Keep a blank line so the file's own line count is unchanged.
                 lines.append("")
                 lineMap.append(SourceLocation(file: file, line: lineNumber))
@@ -242,11 +290,20 @@ public struct IncludeResolver: Sendable {
             do {
                 includedText = try provider.contents(of: target)
             } catch {
-                throw IncludeError.fileNotFound(
-                    name: target,
-                    includeStack: stack,
-                    reason: String(describing: error)
-                )
+                // Wallpaper Engine's own headers live in its application, not inside a
+                // wallpaper, so nothing downloaded from the Workshop carries them. Falling back
+                // here rather than in each provider means every caller gets them — and the
+                // wallpaper's own copy still wins, because this is only reached when the
+                // provider has none.
+                if let builtin = BuiltinShaderLibrary.header(named: target) {
+                    includedText = builtin
+                } else {
+                    throw IncludeError.fileNotFound(
+                        name: target,
+                        includeStack: stack,
+                        reason: String(describing: error)
+                    )
+                }
             }
 
             alreadyExpanded.insert(targetKey)

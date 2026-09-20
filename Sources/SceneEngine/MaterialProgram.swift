@@ -32,6 +32,7 @@ struct SceneAssetShaderProvider: ShaderFileProvider, @unchecked Sendable {
                 return text
             }
         }
+
         throw ShaderFileProviderError.notFound(name)
     }
 }

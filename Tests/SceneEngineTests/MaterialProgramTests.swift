@@ -176,12 +176,40 @@ struct MaterialCompilerTests {
 
     @Test("A missing include fails with the file that could not be found")
     func reportsMissingInclude() throws {
-        // No `common.h` this time, so `saturate` is undefined and the include cannot resolve.
+        // A header nobody supplies. `common.h` is deliberately *not* used here any more: it is
+        // one of Wallpaper Engine's own, so Diorama now provides it and a wallpaper omitting it
+        // is the normal case rather than a failure.
         let (compiler, _) = try compiler()
-        let assets = try makeWallpaper()
+        let assets = try makeWallpaper(fragment: """
+        #include "a_header_nobody_has.h"
+        varying vec2 v_TexCoord;
+        void main() { gl_FragColor = vec4(1.0); }
+        """)
         #expect(throws: (any Error).self) {
             try compiler.program(for: MaterialPass(shader: "test"), assets: assets)
         }
+    }
+
+    @Test("A wallpaper that omits Wallpaper Engine's own headers still compiles")
+    func suppliesStockHeaders() throws {
+        // The common case, and the one that mattered: `common.h` lives in the Wallpaper Engine
+        // application rather than inside a wallpaper, and its helpers are assumed even by
+        // shaders that never name it. Of 56 shaders in a real library only 16 included it,
+        // while 28 called `mul`.
+        let (compiler, _) = try compiler()
+        let assets = try makeWallpaper(fragment: """
+        varying vec2 v_TexCoord;
+        uniform sampler2D g_Texture0;
+        uniform float g_Power;
+        void main() {
+            vec4 albedo = texSample2D(g_Texture0, frac(v_TexCoord));
+            albedo.rgb = pow(albedo.rgb, CAST3(g_Power));
+            gl_FragColor = vec4(saturate(albedo.rgb), 1.0);
+        }
+        """)
+
+        let program = try compiler.program(for: MaterialPass(shader: "test"), assets: assets)
+        #expect(program.textureSlots["g_Texture0"] == 0)
     }
 
     @Test("A shader that does not compile fails rather than drawing nothing")

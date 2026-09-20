@@ -97,6 +97,13 @@ public protocol WallpaperBackend: AnyObject {
     /// Suspend or resume without tearing down. Called when the power policy flips.
     func setPaused(_ paused: Bool)
 
+    /// Frames drawn since this backend started, for diagnostics.
+    ///
+    /// Whether a wallpaper is *animating* is otherwise unobservable from outside the render
+    /// loop: a scene stuck on its first frame and a scene deliberately suspended look identical
+    /// on screen, and both look identical to one that is running perfectly on a still image.
+    var framesRendered: UInt64 { get }
+
     /// Apply the user's settings to content that is already playing.
     ///
     /// Separate from `start` so changing one takes effect on the next frame. Restarting the
@@ -109,6 +116,10 @@ public extension WallpaperBackend {
     /// Most kinds have nothing a `project.json` property can change: a video plays, a web page
     /// runs its own code, an image is an image. Only scenes read them.
     func applyProperties(_ properties: [String: DynamicValue]) {}
+
+    /// Only the Metal-rendered backend counts frames; the rest present through AppKit layers
+    /// that do their own scheduling.
+    var framesRendered: UInt64 { 0 }
 }
 
 public enum BackendError: Error, LocalizedError {

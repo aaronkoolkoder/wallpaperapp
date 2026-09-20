@@ -73,6 +73,17 @@ public final class PlaybackController {
         desktopPicture.reconcileAfterUngracefulExit()
     }
 
+    /// Frames drawn by whatever is playing on `display`.
+    public func framesRendered(on display: CGDirectDisplayID) -> UInt64 {
+        backends[display]?.framesRendered ?? 0
+    }
+
+    /// Whether the policy currently has `display` suspended, for diagnostics that need to tell
+    /// "not animating" apart from "deliberately paused".
+    public func isSuspended(on display: CGDirectDisplayID) -> Bool {
+        coordinator.policy.directive(for: display).isSuspended
+    }
+
     public func currentItem(for display: CGDirectDisplayID) -> WallpaperItem? {
         assignments[display]
     }

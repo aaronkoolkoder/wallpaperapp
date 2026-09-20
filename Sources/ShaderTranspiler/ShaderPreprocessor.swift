@@ -117,6 +117,9 @@ public struct ShaderPreprocessor: Sendable {
     /// Name of the block the gathered uniforms are emitted into.
     public static let uniformBlockName = "DioramaUniforms"
 
+    /// The header prepended to every shader, as Wallpaper Engine's own compiler does.
+    public static let implicitHeader = "common.h"
+
     /// Replacement for the removed `gl_FragColor`.
     public static let fragmentOutputName = "diorama_FragColor"
 
@@ -124,6 +127,24 @@ public struct ShaderPreprocessor: Sendable {
     ///
     /// Applied per identifier token rather than by substring, so `texture2DLod` cannot be
     /// half-rewritten into `textureLod` by an earlier `texture2D` rule.
+    /// Identifiers that were ordinary names in the GLSL these shaders were written against and
+    /// are reserved keywords in the core profile they are compiled as.
+    ///
+    /// `sample` is the one that actually bites: it became a storage qualifier in GLSL 4.20, and
+    /// shipped shaders use it as a plain variable. glslang answers with "syntax error, unexpected
+    /// SAMPLE", which points at the line without saying why a perfectly ordinary name is
+    /// suddenly illegal.
+    static let reservedRenames: [String: String] = [
+        "sample": "we_sample",
+        "filter": "we_filter",
+        "buffer": "we_buffer",
+        "shared": "we_shared",
+        "active": "we_active",
+        "common": "we_common",
+        "partition": "we_partition",
+        "resource": "we_resource",
+    ]
+
     static let builtinReplacements: [String: String] = [
         "texture2D": "texture",
         "texture2DProj": "textureProj",
@@ -137,6 +158,10 @@ public struct ShaderPreprocessor: Sendable {
         "shadow2D": "texture",
         "shadow2DProj": "textureProj",
     ]
+
+    /// Builtin renames and reserved-word renames in one table, so a token is looked at once.
+    static let allIdentifierRewrites: [String: String] =
+        builtinReplacements.merging(reservedRenames) { builtin, _ in builtin }
 
     public var includeResolver: IncludeResolver
 
@@ -189,9 +214,16 @@ public struct ShaderPreprocessor: Sendable {
         comboOverrides: [String: Int] = [:],
         varyingLocations: [String: Int]? = nil
     ) throws -> PreprocessedShader {
+        // Wallpaper Engine's common header is implicit, not included. Most shipped shaders call
+        // `mul`, `frac`, `texSample2D` and `CAST3` without ever naming a header — only 16 of the
+        // 56 in a real library `#include "common.h"` while 28 of them call `mul`. Prepending it
+        // is what its compiler evidently does; the header's own include guard makes a shader
+        // that *does* include it harmless.
         let resolved: ResolvedShaderSource
         do {
-            resolved = try includeResolver.resolve(source, provider: provider)
+            resolved = try includeResolver.resolve(
+                source, provider: provider, prelude: [Self.implicitHeader]
+            )
         } catch let error as IncludeError {
             throw ShaderPreprocessorError.includeFailed(error)
         }
@@ -465,7 +497,7 @@ public struct ShaderPreprocessor: Sendable {
             }
 
             let rewritten = rewriteFragmentOutput(
-                in: Self.rewriteIdentifiers(in: code, using: Self.builtinReplacements),
+                in: Self.rewriteIdentifiers(in: code, using: Self.allIdentifierRewrites),
                 stage: stage,
                 shaderName: shaderName,
                 line: lineNumber,
