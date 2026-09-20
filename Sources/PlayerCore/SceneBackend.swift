@@ -83,6 +83,19 @@ public final class SceneBackend: WallpaperBackend {
             self.renderer?.render(to: metalLayer, timestamp: timestamp)
         }
 
+        // Draw one frame now, before anything can suspend us.
+        //
+        // The power policy suspends a wallpaper whose display is covered, and the library window
+        // is almost always covering it at the moment somebody clicks "Set as Wallpaper". A
+        // suspended scene's frame callback returns immediately, so without this the Metal layer
+        // is never given any content at all and the desktop shows black until the user happens
+        // to uncover it. A video does not have this problem because its layer presents a frame
+        // whether or not playback is running, which is why scenes looked uniquely broken.
+        //
+        // One frame is enough: a Metal layer keeps its last drawable, so a suspended scene sits
+        // there as a still image — which is the behaviour PLAN.md §6.1 already measures at 0%.
+        renderer.render(to: metalLayer)
+
         log.info("scene started: \(scene.layers.count) layer(s) for \(request.id, privacy: .public)")
     }
 

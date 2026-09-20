@@ -130,6 +130,9 @@ public final class DesktopSurface {
         metalView.resolutionScale = resolutionScale
         metalView.onDrawableSizeChange = { [weak self] size in self?.onDrawableSizeChange?(size) }
         mount(metalView)
+        // Only after mounting, which is what gives the view a window to take a scale factor
+        // from. Without this the caller's first render can find a zero-sized drawable.
+        metalView.prepareDrawable()
         return metalView.metalLayer
     }
 

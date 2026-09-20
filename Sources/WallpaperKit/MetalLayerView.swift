@@ -58,6 +58,15 @@ public final class MetalLayerView: NSView {
         updateDrawableSize()
     }
 
+    /// Sizes the drawable now rather than waiting for a layout pass.
+    ///
+    /// `drawableSize` is otherwise only set when the frame or the backing properties change, and
+    /// neither is guaranteed to have fired by the time a caller has just mounted this view. A
+    /// layer with a zero drawable hands back nil from `nextDrawable()`, so the first frame is
+    /// silently dropped — which is invisible for content that draws continuously and fatal for
+    /// content that only ever draws once.
+    public func prepareDrawable() { updateDrawableSize() }
+
     private func updateDrawableSize() {
         guard let metalLayer, let window else { return }
         let scale = window.backingScaleFactor
