@@ -77,13 +77,7 @@ struct InspectorPanel: View {
     private func preview(for item: WallpaperItem) -> some View {
         ZStack {
             RoundedRectangle(cornerRadius: Design.Radius.thumbnail).fill(.quaternary)
-            if let url = item.previewURL, let image = NSImage(contentsOf: url) {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
-            } else {
-                Image(systemName: item.appearance.symbol)
-                    .font(.system(size: 26))
-                    .foregroundStyle(.tertiary)
-            }
+            PreviewImage(url: item.previewURL, fallbackSymbol: item.appearance.symbol)
         }
         .aspectRatio(Design.Grid.aspect, contentMode: .fit)
         .clipShape(.rect(cornerRadius: Design.Radius.thumbnail))

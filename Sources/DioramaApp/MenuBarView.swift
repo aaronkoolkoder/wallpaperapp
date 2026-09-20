@@ -219,15 +219,9 @@ private struct DisplayCard: View {
             RoundedRectangle(cornerRadius: 7)
                 .fill(.quaternary)
 
-            if let url = display.previewURL, let image = NSImage(contentsOf: url) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Image(systemName: "photo")
-                    .font(.system(size: 14))
-                    .foregroundStyle(.tertiary)
-            }
+            // Small, so a small decode: the menu bar thumbnail is about 60 points across and
+            // decoding a megabyte-and-a-half GIF for it would stall the popover opening.
+            PreviewImage(url: display.previewURL, fallbackSymbol: "photo", maxPixel: 200)
 
             if !display.isRunning && display.wallpaperTitle != nil {
                 // Dim rather than hide: the user should still recognise what is loaded, even

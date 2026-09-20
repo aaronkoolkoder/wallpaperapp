@@ -98,15 +98,7 @@ struct WallpaperCard: View {
         ZStack {
             Rectangle().fill(Design.Surface.inset)
 
-            if let url = item.previewURL, let image = NSImage(contentsOf: url) {
-                Image(nsImage: image)
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
-            } else {
-                Image(systemName: item.appearance.symbol)
-                    .font(.system(size: 26, weight: .light))
-                    .foregroundStyle(Design.Ink.secondary.opacity(0.5))
-            }
+            PreviewImage(url: item.previewURL, fallbackSymbol: item.appearance.symbol)
 
             if !item.isPlayable {
                 // Dimmed, not crushed. A multiply blend here took the card to near-black and
