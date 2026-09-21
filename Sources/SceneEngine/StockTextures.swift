@@ -25,8 +25,33 @@ enum StockTextures {
         var name = reference.replacingOccurrences(of: "\\", with: "/").lowercased()
         if name.hasPrefix("materials/") { name.removeFirst("materials/".count) }
         if name.hasSuffix(".tex") { name.removeLast(".tex".count) }
-        return names.contains(name) ? name : nil
+        if names.contains(name) { return name }
+        return particleSprite(for: name)
     }
+
+    /// Stand-ins for Wallpaper Engine's stock particle sprites.
+    ///
+    /// Emitters name `particle/halo`, `particle/fog/fog1`, `particle/drop` and their numbered
+    /// variants, which ship with Wallpaper Engine rather than the wallpaper — in a real library
+    /// they were missing from 10, 10 and 5 wallpapers, and every one of those particles drew as a
+    /// hard white square. What they have in common is a soft white shape the particle's own
+    /// colour tints, so that is what is generated: a round glow by default, a wider fainter
+    /// blob for fog and smoke, a thin streak for rain and a soft vertical beam.
+    static func particleSprite(for name: String) -> String? {
+        guard name.hasPrefix("particle/") else { return nil }
+        if name.contains("fog") || name.contains("smoke") || name.contains("cloud") {
+            return "particle:fog"
+        }
+        if name.contains("drop") || name.contains("rain") { return "particle:drop" }
+        if name.contains("beam") || name.contains("ray") || name.contains("shaft") {
+            return "particle:beam"
+        }
+        return "particle:glow"
+    }
+
+    /// Whether a stock name is an approximation rather than a faithful equivalent, so the
+    /// compatibility report can say so.
+    static func isApproximation(_ name: String) -> Bool { name.hasPrefix("particle:") }
 
     static func make(_ name: String, device: any MTLDevice) -> SceneTexture? {
         switch name {
@@ -36,8 +61,41 @@ enum StockTextures {
         case "util/noflow": return solid(127, 127, 127, 255, device: device, label: name)
         case "util/noise": return image(noise(side: 256), side: 256, device: device, label: name)
         case "util/clouds_256": return image(clouds(side: 256), side: 256, device: device, label: name)
+        case "particle:glow":
+            return image(sprite(side: 64) { x, y in falloff(x * x + y * y, sharpness: 3) },
+                         side: 64, device: device, label: name, repeats: false)
+        case "particle:fog":
+            return image(sprite(side: 128) { x, y in 0.6 * falloff(x * x + y * y, sharpness: 1.5) },
+                         side: 128, device: device, label: name, repeats: false)
+        case "particle:drop":
+            return image(sprite(side: 64) { x, y in falloff(x * x * 36 + y * y, sharpness: 3) },
+                         side: 64, device: device, label: name, repeats: false)
+        case "particle:beam":
+            return image(sprite(side: 64) { x, y in falloff(x * x * 9, sharpness: 3) * (1 - abs(y)) },
+                         side: 64, device: device, label: name, repeats: false)
         default: return nil
         }
+    }
+
+    /// White, with alpha from `shape` over -1...1 in both axes. Straight alpha, like every other
+    /// texture here: the shaders premultiply after sampling.
+    static func sprite(side: Int, shape: (Float, Float) -> Float) -> [UInt8] {
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        for row in 0 ..< side {
+            for column in 0 ..< side {
+                let x = (Float(column) + 0.5) / Float(side) * 2 - 1
+                let y = (Float(row) + 0.5) / Float(side) * 2 - 1
+                let alpha = min(max(shape(x, y), 0), 1)
+                pixels[(row * side + column) * 4 + 3] = UInt8((alpha * 255).rounded())
+            }
+        }
+        return pixels
+    }
+
+    /// 1 at the centre, 0 at a squared distance of 1 and beyond, smooth between.
+    private static func falloff(_ squaredDistance: Float, sharpness: Float) -> Float {
+        guard squaredDistance < 1 else { return 0 }
+        return powf(1 - squaredDistance, sharpness)
     }
 
     // MARK: - Generation
@@ -102,7 +160,7 @@ enum StockTextures {
     }
 
     private static func image(
-        _ rgba: [UInt8], side: Int, device: any MTLDevice, label: String
+        _ rgba: [UInt8], side: Int, device: any MTLDevice, label: String, repeats: Bool = true
     ) -> SceneTexture? {
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .rgba8Unorm, width: side, height: side, mipmapped: false
@@ -116,9 +174,9 @@ enum StockTextures {
             )
         }
         texture.label = "stock:\(label)"
-        // Every stock texture repeats. The noise ones are sampled far outside 0..1 on purpose,
-        // and for the one-texel ones the question does not arise.
-        return SceneTexture(texture: texture, imageSize: SIMD2(Float(side), Float(side)), repeats: true)
+        // The utility textures repeat: the noise ones are sampled far outside 0..1 on purpose,
+        // and for the one-texel ones the question does not arise. A sprite must not.
+        return SceneTexture(texture: texture, imageSize: SIMD2(Float(side), Float(side)), repeats: repeats)
     }
 }
 

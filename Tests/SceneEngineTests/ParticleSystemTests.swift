@@ -179,4 +179,67 @@ struct ParticleSystemTests {
             #expect(abs(first.tint.x - 1.0) < 0.01)
         }
     }
+    // MARK: - Where particles start
+
+    /// Live particle positions, read back through the draws they produce.
+    private func positions(_ system: ParticleSystem) -> [SIMD2<Float>] {
+        var draws: [QuadDraw] = []
+        system.appendDraws(to: &draws, cameraOffset: .zero)
+        return draws.map { SIMD2($0.transform.columns.3.x, $0.transform.columns.3.y) }
+    }
+
+    @Test("A sphere emitter with a minimum distance spawns a ring, not a point")
+    func ringEmitter() throws {
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":200,
+         "emitter":[{"name":"sphererandom","rate":1000,"distancemin":64,"distancemax":64,"directions":"1 1 0"}],
+         "initializer":[{"name":"lifetimerandom","min":5,"max":5}]}
+        """))
+        system.update(deltaTime: 0.1)
+        let distances = positions(system).map { simd_length($0) }
+        #expect(!distances.isEmpty)
+        #expect(distances.allSatisfy { abs($0 - 64) < 0.5 })
+    }
+
+    @Test("An emitter that leaves out its distance spreads over the default 256, not one point")
+    func defaultSpawnDistance() throws {
+        // Wallpaper Engine omits values equal to their default. Reading a missing distancemax
+        // as zero piled 15,000 particles a second onto one point in real content.
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":500,
+         "emitter":[{"name":"sphererandom","rate":5000,"distancemin":200,"directions":"1 1 0"}],
+         "initializer":[{"name":"lifetimerandom","min":5,"max":5}]}
+        """))
+        system.update(deltaTime: 0.1)
+        let distances = positions(system).map { simd_length($0) }
+        #expect(distances.min() ?? 0 >= 199)
+        #expect(distances.max() ?? 0 <= 256.5)
+    }
+
+    @Test("The emitter's own origin moves where particles start")
+    func emitterOrigin() throws {
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":20,
+         "emitter":[{"name":"boxrandom","rate":1000,"distancemax":0,"origin":"-256 256 0"}],
+         "initializer":[{"name":"lifetimerandom","min":5,"max":5}]}
+        """))
+        system.update(deltaTime: 0.05)
+        #expect(positions(system).allSatisfy { $0 == SIMD2(-256, 256) })
+    }
+
+    @Test("Turbulence stirs particles that would otherwise sit still")
+    func turbulenceMoves() throws {
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":50,
+         "emitter":[{"name":"sphererandom","rate":1000,"distancemin":100,"distancemax":100,"directions":"1 1 0"}],
+         "initializer":[{"name":"lifetimerandom","min":10,"max":10}],
+         "operator":[{"name":"turbulence","scale":0.01,"speedmin":500,"speedmax":1000,"timescale":1}]}
+        """))
+        system.update(deltaTime: 0.05)
+        let before = positions(system)
+        system.update(deltaTime: 0.1)
+        let after = positions(system).prefix(before.count)
+        #expect(zip(before, after).contains { simd_distance($0, $1) > 0.5 })
+        #expect(system.findings.contains { $0.detail == "turbulence is approximated" })
+    }
 }

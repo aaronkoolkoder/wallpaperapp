@@ -46,8 +46,19 @@ public final class ParticleSystem {
     // Cached emitter/initializer/operator parameters, resolved once at load rather than looked
     // up by string every frame.
     private var emissionRate: Float = 0
+    /// Spawn distance from the emitter, per axis. See `configure()`.
     private var emitterExtent: SIMD3<Float> = .zero
+    private var emitterInnerExtent: SIMD3<Float> = .zero
+    /// Axis mask: `"1 1 0"` keeps a 2D scene's particles on its plane.
+    private var emitterDirections: SIMD3<Float> = .one
+    /// The emitter's own offset from the object's origin.
+    private var emitterOffset: SIMD3<Float> = .zero
     private var emitterIsSphere = false
+    /// Turbulence: a smooth, time-varying push. Approximated, not Wallpaper Engine's noise.
+    private var turbulenceScale: Float = 0
+    private var turbulenceSpeed: Float = 0
+    private var turbulenceTimescale: Float = 0
+    private var elapsed: Float = 0
     private var lifetimeRange: ClosedRange<Float> = 1...1
     private var sizeRange: ClosedRange<Float> = 10...10
     private var alphaRange: ClosedRange<Float> = 1...1
@@ -84,9 +95,16 @@ public final class ParticleSystem {
             case "boxrandom", "sphererandom":
                 emitterIsSphere = emitter.name == "sphererandom"
                 emissionRate += emitter.float("rate") ?? 10
-                if let max = emitter.vector("distancemax") {
-                    emitterExtent = SIMD3(Float(max.x), Float(max.y), Float(max.z))
-                }
+                // Wallpaper Engine leaves a value out of the file when it equals the default,
+                // and the default spawn distance is 256. Reading a missing `distancemax` as zero
+                // spawned every particle on one point: in a real library, 15,000 a second of them
+                // piled into a white square in the middle of a face.
+                let outer = vector(emitter, "distancemax", default: SIMD3(repeating: 256))
+                let inner = vector(emitter, "distancemin", default: .zero)
+                emitterExtent = simd_max(outer, inner)
+                emitterInnerExtent = simd_min(outer, inner)
+                emitterDirections = vector(emitter, "directions", default: .one)
+                emitterOffset = vector(emitter, "origin", default: .zero)
             default:
                 note(.degraded, "Particle emitter", "\(emitter.name) is not supported")
             }
@@ -138,6 +156,13 @@ public final class ParticleSystem {
             case "angularmovement":
                 // Already integrated from angular velocity; nothing extra to configure.
                 break
+            case "turbulence":
+                turbulenceScale = op.float("scale") ?? 0.005
+                let slowest = op.float("speedmin") ?? 500
+                let fastest = op.float("speedmax") ?? 1000
+                turbulenceSpeed = (slowest + fastest) / 2
+                turbulenceTimescale = op.float("timescale") ?? 1
+                note(.degraded, "Particle operator", "turbulence is approximated")
             default:
                 note(.degraded, "Particle operator", "\(op.name) is not supported")
             }
@@ -152,8 +177,8 @@ public final class ParticleSystem {
         return low <= high ? low...high : high...low
     }
 
-    private func vector(_ node: ParticleNode, _ key: String) -> SIMD3<Float> {
-        guard let v = node.vector(key) else { return .zero }
+    private func vector(_ node: ParticleNode, _ key: String, default fallback: SIMD3<Float> = .zero) -> SIMD3<Float> {
+        guard let v = node.vector(key) else { return fallback }
         return SIMD3(Float(v.x), Float(v.y), Float(v.z))
     }
 
@@ -167,6 +192,7 @@ public final class ParticleSystem {
 
     public func update(deltaTime: Float) {
         guard deltaTime > 0, !particles.isEmpty else { return }
+        elapsed += deltaTime
 
         // Age and integrate.
         for index in particles.indices where particles[index].isAlive {
@@ -179,6 +205,9 @@ public final class ParticleSystem {
             }
 
             particle.velocity += gravity * deltaTime
+            if turbulenceSpeed > 0 {
+                particle.velocity += turbulence(at: particle.position) * turbulenceSpeed * deltaTime
+            }
             if drag > 0 {
                 // Exponential rather than linear so a large drag cannot reverse the velocity,
                 // which a naive `v -= v * drag * dt` does as soon as drag * dt exceeds 1.
@@ -199,6 +228,19 @@ public final class ParticleSystem {
         }
 
         emit(deltaTime: deltaTime)
+    }
+
+    /// A smooth, swirling unit-ish field over position and time: a few crossed sine waves.
+    /// Cheap enough for thousands of particles a frame, and it spreads and stirs them the way the
+    /// operator is used for, which is what matters more than matching its exact noise.
+    private func turbulence(at position: SIMD3<Float>) -> SIMD3<Float> {
+        let p = position * turbulenceScale
+        let t = elapsed * turbulenceTimescale * 0.1
+        return SIMD3(
+            sinf(p.y * 1.7 + t) + sinf(p.z * 2.3 - t * 1.3),
+            sinf(p.z * 1.9 - t * 0.7) + sinf(p.x * 2.1 + t),
+            0
+        ) * 0.5
     }
 
     private func fadeFactor(age: Float, lifetime: Float) -> Float {
@@ -239,13 +281,21 @@ public final class ParticleSystem {
             .random(in: -1...1, using: &random),
             .random(in: -1...1, using: &random),
             .random(in: -1...1, using: &random)
-        )
+        ) * emitterDirections
         if emitterIsSphere {
+            // A direction, then a distance between the inner and outer radius: a sphere with a
+            // minimum distance is a shell, and in a 2D scene a ring.
             let length = simd_length(offset)
-            if length > 0.0001 { offset /= length }
-            offset *= Float.random(in: 0...1, using: &random)
+            offset = length > 0.0001 ? offset / length : SIMD3(1, 0, 0) * emitterDirections
+            let reach = Float.random(in: 0...1, using: &random)
+            offset *= emitterInnerExtent + (emitterExtent - emitterInnerExtent) * reach
+        } else {
+            // Each axis between the inner and outer half-width, on either side.
+            let magnitude = simd_abs(offset)
+            let sign = simd_sign(offset)
+            offset = sign * (emitterInnerExtent + (emitterExtent - emitterInnerExtent) * magnitude)
         }
-        particle.position = origin + offset * emitterExtent
+        particle.position = origin + emitterOffset + offset
 
         particle.velocity = SIMD3(
             .random(in: componentRange(velocityMin.x, velocityMax.x), using: &random),
