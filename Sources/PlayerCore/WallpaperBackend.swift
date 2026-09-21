@@ -144,6 +144,7 @@ public enum BackendError: Error, LocalizedError {
     case contentMissing(URL)
     case contentUnreadable(URL, underlying: String)
     case noRenderableTrack
+    case networkBlockUnavailable
 
     public var errorDescription: String? {
         switch self {
@@ -155,6 +156,8 @@ public enum BackendError: Error, LocalizedError {
             "Could not read \(url.lastPathComponent): \(underlying)"
         case .noRenderableTrack:
             "The video contains no playable video track"
+        case .networkBlockUnavailable:
+            "Network access for web wallpapers could not be blocked"
         }
     }
 }

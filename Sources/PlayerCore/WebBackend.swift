@@ -3,6 +3,7 @@ import Diagnostics
 import Foundation
 import SceneEngine
 import WallpaperKit
+import WEFormat
 import WebKit
 import os
 
@@ -23,9 +24,92 @@ public final class WebBackend: NSObject, WallpaperBackend {
     public private(set) var report: CompatibilityReport
 
     private var webView: WKWebView?
+    private var isPaused = false
     private var audioSource: (() -> AudioFrame)?
     private var audioTimer: Timer?
     private let log = Logger(subsystem: "app.diorama", category: "web")
+
+    /// Bumped by every `stop()`, so a page whose start was waiting on the network block can tell
+    /// it has since been replaced and must not load.
+    private var generation = 0
+
+    /// Refuses every load over a network scheme.
+    ///
+    /// The navigation policy further down only ever sees navigations: a link followed, a frame
+    /// opened. A stylesheet from a CDN, a web font, an image, `fetch`, an XHR or a WebSocket is a
+    /// subresource load that never passes through it, and until this existed every one of those
+    /// went out. In the first real library tested, one wallpaper pulled a Google Fonts
+    /// stylesheet and another its music player from jsDelivr and the YouTube iframe API. A
+    /// content rule list is what WebKit applies to every load, whatever started it.
+    ///
+    /// Written as the network schemes to refuse rather than as "everything but file:", so it
+    /// cannot take a wallpaper's own files, `data:` or `blob:` URLs down with it.
+    static let networkBlockRules = """
+    [
+      {"trigger": {"url-filter": "^https?:"}, "action": {"type": "block"}},
+      {"trigger": {"url-filter": "^wss?:"}, "action": {"type": "block"}},
+      {"trigger": {"url-filter": "^ftp:"}, "action": {"type": "block"}}
+    ]
+    """
+
+    private static var compiledNetworkBlock: WKContentRuleList?
+
+    /// The compiled ``networkBlockRules``, compiled once per launch.
+    static func networkBlock() async throws -> WKContentRuleList {
+        if let compiledNetworkBlock { return compiledNetworkBlock }
+        guard let store = WKContentRuleListStore.default(),
+              let list = try await store.compileContentRuleList(
+                  forIdentifier: "app.diorama.web.no-network",
+                  encodedContentRuleList: networkBlockRules
+              )
+        else { throw BackendError.networkBlockUnavailable }
+        compiledNetworkBlock = list
+        return list
+    }
+
+    /// How a web wallpaper's view is configured. Separate from `start` so tests load pages
+    /// through exactly what the app uses.
+    static func configuration(
+        properties: [String: WEProperty],
+        isMuted: Bool,
+        networkBlock: WKContentRuleList
+    ) -> WKWebViewConfiguration {
+        let configuration = WKWebViewConfiguration()
+        configuration.suppressesIncrementalRendering = true
+        // Autoplay is always allowed, and silence is achieved by muting the elements instead.
+        // `mediaTypesRequiringUserActionForPlayback` gates video as well as audio, and every
+        // web wallpaper in the first real library tested uses video as its background — so
+        // "muted" stopped them animating at all rather than merely stopping the sound.
+        configuration.mediaTypesRequiringUserActionForPlayback = []
+        configuration.websiteDataStore = .nonPersistent()
+        configuration.userContentController.add(networkBlock)
+
+        // The host API a web wallpaper is written against, in place before any of its own
+        // scripts run. Without it, the first call to `wallpaperRegisterAudioListener` throws
+        // and the wallpaper's script stops there.
+        configuration.userContentController.addUserScript(
+            WebWallpaperBridge.userScript(properties: properties, isMuted: isMuted)
+        )
+        return configuration
+    }
+
+    /// Hosts a wallpaper's page asks for over the network, read from its markup.
+    ///
+    /// Only for the compatibility report: the blocking itself is ``networkBlockRules``. Without
+    /// this, a music player or web font that silently never loads looks like a rendering bug.
+    static func remoteHosts(inHTML html: String) -> [String] {
+        let pattern = #"(?:src|href)\s*=\s*["']\s*(?:https?:|wss?:)?//([A-Za-z0-9.-]+)"#
+        guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+        else { return [] }
+        let range = NSRange(html.startIndex..., in: html)
+        var hosts: [String] = []
+        for match in expression.matches(in: html, range: range) {
+            guard let hostRange = Range(match.range(at: 1), in: html) else { continue }
+            let host = html[hostRange].lowercased()
+            if !hosts.contains(host) { hosts.append(host) }
+        }
+        return hosts
+    }
 
     /// How often analysed audio is handed to the page.
     ///
@@ -46,24 +130,49 @@ public final class WebBackend: NSObject, WallpaperBackend {
             throw BackendError.contentMissing(request.contentURL)
         }
 
-        let configuration = WKWebViewConfiguration()
-        configuration.suppressesIncrementalRendering = true
-        // Autoplay is always allowed, and silence is achieved by muting the elements instead.
-        // `mediaTypesRequiringUserActionForPlayback` gates video as well as audio, and every
-        // web wallpaper in the first real library tested uses video as its background — so
-        // "muted" stopped them animating at all rather than merely stopping the sound.
-        configuration.mediaTypesRequiringUserActionForPlayback = []
-        configuration.websiteDataStore = .nonPersistent()
+        if let html = try? String(contentsOf: request.contentURL, encoding: .utf8) {
+            let hosts = Self.remoteHosts(inHTML: html)
+            if !hosts.isEmpty {
+                report.add(
+                    .degraded, feature: "Network access",
+                    detail: "asks for content from \(hosts.prefix(3).joined(separator: ", ")), "
+                        + "which is blocked — anything it needs from there will be missing"
+                )
+            }
+        }
 
-        // The host API a web wallpaper is written against, in place before any of its own
-        // scripts run. Without it, the first call to `wallpaperRegisterAudioListener` throws
-        // and the wallpaper's script stops there.
-        configuration.userContentController.addUserScript(
-            WebWallpaperBridge.userScript(
-                properties: request.webProperties, isMuted: request.isMuted
-            )
+        // The page is never loaded without the network block in place. Once it has been compiled
+        // this launch, that is immediate; the first web wallpaper waits for the compile.
+        if let block = Self.compiledNetworkBlock {
+            load(request, on: surface, networkBlock: block)
+            return
+        }
+        let pending = generation
+        Task { @MainActor [weak self, weak surface] in
+            let block: WKContentRuleList
+            do {
+                block = try await Self.networkBlock()
+            } catch {
+                guard let self, self.generation == pending else { return }
+                self.log.error("network block unavailable: \(error, privacy: .public)")
+                self.report.add(
+                    .unsupported, feature: "Page load",
+                    detail: "network access could not be blocked, so the page was not opened"
+                )
+                return
+            }
+            guard let self, let surface, self.generation == pending else { return }
+            self.load(request, on: surface, networkBlock: block)
+        }
+    }
+
+    private func load(
+        _ request: WallpaperRequest, on surface: DesktopSurface, networkBlock: WKContentRuleList
+    ) {
+        let configuration = Self.configuration(
+            properties: request.webProperties, isMuted: request.isMuted,
+            networkBlock: networkBlock
         )
-
         let view = WKWebView(frame: .zero, configuration: configuration)
         view.navigationDelegate = self
         view.setValue(false, forKey: "drawsBackground")
@@ -71,6 +180,7 @@ public final class WebBackend: NSObject, WallpaperBackend {
         view.allowsBackForwardNavigationGestures = false
         view.allowsMagnification = false
 
+        view.isHidden = isPaused
         webView = view
         surface.mount(view)
 
@@ -80,6 +190,7 @@ public final class WebBackend: NSObject, WallpaperBackend {
     }
 
     public func stop() {
+        generation &+= 1
         audioTimer?.invalidate()
         audioTimer = nil
         webView?.stopLoading()
@@ -123,6 +234,7 @@ public final class WebBackend: NSObject, WallpaperBackend {
         // and animation in a window the compositor reports as not visible, and the surface is
         // hidden by the time this is called. Hiding the view makes that explicit rather than
         // relying on the behaviour being inferred.
+        isPaused = paused
         webView?.isHidden = paused
     }
 }
