@@ -126,6 +126,32 @@ struct SceneBuilderTests {
 
     // MARK: - Helpers
 
+    @Test("Saved angles are radians")
+    func anglesAreRadians() throws {
+        // Real content stores a quarter turn as 1.5708 and a half turn as 3.107: radians. Read as
+        // degrees, a layer authored upright on its side was drawn about a degree and a half off
+        // level — 102 rotated objects in a real library.
+        guard let device = MTLCreateSystemDefaultDevice() else { return }
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("diorama-angles-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(
+            at: root.appendingPathComponent("materials"), withIntermediateDirectories: true
+        )
+        try Data(#"{"passes":[{"shader":"genericimage2","textures":[]}]}"#.utf8)
+            .write(to: root.appendingPathComponent("materials/solid.json"))
+        let document = try JSONDecoder().decode(SceneDocument.self, from: Data("""
+        {"objects":[{"id":1,"name":"Upright","image":"materials/solid.json",
+                     "size":"10 10","angles":"0.00000 0.00000 1.57080"}]}
+        """.utf8))
+        let scene = SceneBuilder().build(
+            document: document,
+            assets: SceneAssets(wallpaperID: "angles", directory: root, packageURL: nil),
+            device: device
+        )
+        let layer = try #require(scene.layers.first)
+        #expect(abs(layer.angles.z - 1.5708) < 0.0001)
+    }
+
     private func testLayer() -> RenderableLayer {
         RenderableLayer(
             name: "test", origin: .zero, angles: .zero, scale: SIMD3(1, 1, 1),

@@ -534,9 +534,9 @@ public struct SceneBuilder {
             name: object.name ?? "Text",
             origin: SIMD3(Float(origin.x), Float(origin.y), Float(origin.z)),
             angles: SIMD3(
-                Float(angles.x) * .pi / 180,
-                Float(angles.y) * .pi / 180,
-                Float(angles.z) * .pi / 180
+                Float(angles.x),
+                Float(angles.y),
+                Float(angles.z)
             ),
             scale: SIMD3(Float(scale.x), Float(scale.y), Float(scale.z)),
             size: rendered.size,
@@ -615,9 +615,9 @@ public struct SceneBuilder {
             name: object.name ?? imagePath,
             origin: SIMD3(Float(origin.x), Float(origin.y), Float(origin.z)),
             angles: SIMD3(
-                Float(angles.x) * .pi / 180,
-                Float(angles.y) * .pi / 180,
-                Float(angles.z) * .pi / 180
+                Float(angles.x),
+                Float(angles.y),
+                Float(angles.z)
             ),
             scale: SIMD3(Float(scale.x), Float(scale.y), Float(scale.z)),
             size: size,
