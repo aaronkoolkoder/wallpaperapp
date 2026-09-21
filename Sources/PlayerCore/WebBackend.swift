@@ -54,10 +54,25 @@ public final class WebBackend: NSObject, WallpaperBackend {
 
     private static var compiledNetworkBlock: WKContentRuleList?
 
+    /// Where WebKit keeps the compiled list: beside Diorama's other derived data, so that
+    /// deleting `~/Library/Application Support/Diorama` still removes everything the app wrote,
+    /// as PRIVACY.md says. WebKit's default store would put it under `~/Library/WebKit`.
+    private static var ruleListStore: WKContentRuleListStore? {
+        guard let support = try? FileManager.default.url(
+            for: .applicationSupportDirectory, in: .userDomainMask,
+            appropriateFor: nil, create: true
+        ) else { return WKContentRuleListStore.default() }
+        let directory = support.appendingPathComponent("Diorama/WebRules", isDirectory: true)
+        guard (try? FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true
+        )) != nil else { return WKContentRuleListStore.default() }
+        return WKContentRuleListStore(url: directory)
+    }
+
     /// The compiled ``networkBlockRules``, compiled once per launch.
     static func networkBlock() async throws -> WKContentRuleList {
         if let compiledNetworkBlock { return compiledNetworkBlock }
-        guard let store = WKContentRuleListStore.default(),
+        guard let store = ruleListStore,
               let list = try await store.compileContentRuleList(
                   forIdentifier: "app.diorama.web.no-network",
                   encodedContentRuleList: networkBlockRules
