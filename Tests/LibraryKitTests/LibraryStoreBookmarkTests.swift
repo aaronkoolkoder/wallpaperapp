@@ -129,6 +129,69 @@ struct LibraryStoreBookmarkTests {
         }
     }
 
+    private func addWallpaper(_ id: String, to root: URL) throws {
+        let item = root.appendingPathComponent(id, isDirectory: true)
+        try FileManager.default.createDirectory(at: item, withIntermediateDirectories: true)
+        try #"{"title":"Two","type":"scene","file":"scene.json","tags":[]}"#.write(
+            to: item.appendingPathComponent("project.json"), atomically: true, encoding: .utf8
+        )
+    }
+
+    @Test("Picking one wallpaper's folder adopts the library around it")
+    func pickingOneWallpaperAdoptsTheLibrary() throws {
+        guard !LibraryStore.isSandboxed else { return }
+        try withDefaults { defaults in
+            let root = try makeLibrary()
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            let store = LibraryStore(defaults: defaults)
+            store.importLibrary(at: root.appendingPathComponent("123456"))
+            #expect(store.rootURL?.standardizedFileURL == root.standardizedFileURL)
+        }
+    }
+
+    @Test("The library survives losing the wallpaper it was picked through")
+    func survivesLosingThePickedWallpaper() throws {
+        // The real-world case: the user picked one wallpaper's folder, then unsubscribed from
+        // that wallpaper in Steam. Storing the pick verbatim lost the entire library with it.
+        guard !LibraryStore.isSandboxed else { return }
+        try withDefaults { defaults in
+            let root = try makeLibrary()
+            try addWallpaper("654321", to: root)
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            LibraryStore(defaults: defaults).importLibrary(at: root.appendingPathComponent("123456"))
+            try FileManager.default.removeItem(at: root.appendingPathComponent("123456"))
+
+            let nextLaunch = LibraryStore(defaults: defaults)
+            nextLaunch.restore()
+            #expect(nextLaunch.accessError == nil, "the whole library was lost with one wallpaper")
+            #expect(nextLaunch.rootURL?.standardizedFileURL == root.standardizedFileURL)
+        }
+    }
+
+    @Test("A bookmark an earlier build stored inside the library moves to the library")
+    func migratesABookmarkPointingInside() throws {
+        guard !LibraryStore.isSandboxed else { return }
+        try withDefaults { defaults in
+            let root = try makeLibrary()
+            defer { try? FileManager.default.removeItem(at: root) }
+
+            // What the previous build wrote for someone who picked a single wallpaper.
+            let inside = root.appendingPathComponent("123456")
+            defaults.set(try LibraryStore.makeBookmark(for: inside), forKey: "libraryBookmark")
+
+            let store = LibraryStore(defaults: defaults)
+            store.restore()
+            #expect(store.rootURL?.standardizedFileURL == root.standardizedFileURL)
+
+            // Rewritten, so the next launch no longer depends on that one wallpaper either.
+            let stored = try #require(defaults.data(forKey: "libraryBookmark"))
+            let resolved = try LibraryStore.resolveBookmark(stored)
+            #expect(resolved.url.standardizedFileURL == root.standardizedFileURL)
+        }
+    }
+
     @Test("Forgetting a library clears what was stored")
     func forgetClearsBookmark() throws {
         try withDefaults { defaults in

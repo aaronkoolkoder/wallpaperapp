@@ -43,7 +43,8 @@ public final class LibraryStore {
     // MARK: - Import
 
     /// Adopt a folder the user picked and index it.
-    public func importLibrary(at url: URL) {
+    public func importLibrary(at picked: URL) {
+        let url = libraryFolder(for: picked)
         releaseScope()
         do {
             defaults.set(try Self.makeBookmark(for: url), forKey: Self.bookmarkKey)
@@ -64,13 +65,20 @@ public final class LibraryStore {
 
         do {
             let (url, isStale) = try Self.resolveBookmark(bookmark)
+
+            // Rewrite the bookmark rather than use it as it is when either it is stale — it
+            // resolves now but will not survive another launch — or it points inside the
+            // library rather than at it, which is what an earlier build stored for anyone who
+            // picked a single wallpaper's folder.
+            if isStale || libraryFolder(for: url).standardizedFileURL != url.standardizedFileURL {
+                importLibrary(at: url)
+                return
+            }
+
             beginAccess(url)
             rootURL = url
             accessError = nil
-
-            // A stale bookmark still resolves but will not survive another launch; refresh it
-            // quietly rather than waiting for it to fail.
-            if isStale { importLibrary(at: url) } else { rescan() }
+            rescan()
         } catch {
             accessError = "Could not reopen your wallpaper folder. It may have moved, "
                 + "or the drive it is on may not be connected."
@@ -105,6 +113,19 @@ public final class LibraryStore {
                 self.isScanning = false
             }
         }
+    }
+
+    /// The folder that actually holds the wallpapers, given the one the user picked.
+    ///
+    /// People pick the Steam folder above the library, or one wallpaper inside it, about as
+    /// often as the right one, and the scanner copes with both. Storing the folder *as picked*,
+    /// though, made the library's survival hinge on that choice: pick one wallpaper's folder,
+    /// later unsubscribe from that wallpaper in Steam, and the whole library fails to reopen —
+    /// while the sidebar showed a wallpaper's number where the library's name belonged.
+    ///
+    /// Inside the sandbox access reaches only what the user picked, so the pick is kept as is.
+    func libraryFolder(for picked: URL) -> URL {
+        Self.isSandboxed ? picked : scanner.resolveRoot(from: picked)
     }
 
     public func item(withID id: String) -> WallpaperItem? {
