@@ -28,6 +28,9 @@ public final class PlaybackController {
         ProcessInfo.processInfo.environment["DIORAMA_NO_DESKTOP_SYNC"] != "1"
 
 
+    /// What was playing where, so a launch can put it back.
+    public let session: WallpaperSessionStore
+
     /// The user's per-wallpaper settings, remembered across launches.
     public let propertySettings: PropertySettingsStore
 
@@ -75,10 +78,12 @@ public final class PlaybackController {
 
     public init(
         coordinator: DisplayCoordinator,
-        propertySettings: PropertySettingsStore = PropertySettingsStore()
+        propertySettings: PropertySettingsStore = PropertySettingsStore(),
+        session: WallpaperSessionStore = WallpaperSessionStore()
     ) {
         self.coordinator = coordinator
         self.propertySettings = propertySettings
+        self.session = session
         // Before anything else: if a previous run died without restoring, give the user their
         // own wallpaper back rather than silently keeping ours.
         desktopPicture.reconcileAfterUngracefulExit()
@@ -159,6 +164,7 @@ public final class PlaybackController {
             try backend.start(request, on: surface)
             backends[display] = backend
             assignments[display] = item
+            session.remember(item.id, on: display)
             coordinator.setHasContent(true, frameRate: backend.contentFrameRate, for: display)
 
             // Apply the current directive immediately: if the display is already covered, the
@@ -182,7 +188,18 @@ public final class PlaybackController {
         return report
     }
 
+    /// Clear a display. The user meant it, so the next launch leaves it clear too.
     public func stop(on display: CGDirectDisplayID) {
+        session.forget(display)
+        tearDown(on: display)
+    }
+
+    /// Stop playing without touching what is remembered.
+    ///
+    /// Quitting is not the same decision as clearing a display: an app that forgot its
+    /// wallpapers every time it shut down would come back to a blank desktop, which is the
+    /// whole thing the session store exists to prevent.
+    private func tearDown(on display: CGDirectDisplayID) {
         backends[display]?.stop()
         backends.removeValue(forKey: display)
         assignments.removeValue(forKey: display)
@@ -192,7 +209,7 @@ public final class PlaybackController {
     }
 
     public func stopAll() {
-        for display in Array(backends.keys) { stop(on: display) }
+        for display in Array(backends.keys) { tearDown(on: display) }
         // Give the user their own wallpaper back rather than leaving ours behind after quit.
         desktopPicture.restoreOriginal()
     }

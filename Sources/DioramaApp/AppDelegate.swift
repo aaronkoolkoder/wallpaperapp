@@ -136,12 +136,55 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        // Always open the library on launch. A menu bar icon is easy to miss, and an app that
-        // starts and visibly does nothing reads as broken — the first thing it does should be
-        // to show you the thing it is for.
-        if ProcessInfo.processInfo.environment["DIORAMA_PLAY"] == nil {
-            showLibrary(nil)
+        // Put back whatever was playing, then decide whether to show anything.
+        //
+        // Opening the library unconditionally is wrong once the app starts at login: the first
+        // thing the user would see every morning is a window they did not ask for. Opening it
+        // only when there was nothing to restore gives both behaviours from one rule — a first
+        // launch still shows the thing the app is for, and a login launch is silent.
+        if ProcessInfo.processInfo.environment["DIORAMA_PLAY"] == nil,
+           ProcessInfo.processInfo.environment["DIORAMA_HOLD"] == nil,
+           ProcessInfo.processInfo.environment["DIORAMA_STRESS"] == nil {
+            Task { @MainActor in
+                let restored = await self.restoreSession()
+                if !restored { self.showLibrary(nil) }
+            }
         }
+    }
+
+    /// Replay the wallpapers this Mac had before the app last quit.
+    ///
+    /// - Returns: whether anything was put back.
+    private func restoreSession() async -> Bool {
+        guard let playback, !playback.session.isEmpty else { return false }
+
+        // The scan runs off the main actor, so the library is empty for a moment after launch.
+        // Waiting on it is what makes this work on a cold boot, where the app starts before the
+        // disk has warmed up.
+        for _ in 0 ..< 80 where library.items.isEmpty {
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        // The fallback below is only for the case where none of the displays attached right
+        // now is one we have an assignment for — a laptop last used docked, now on its own.
+        // Applying it per display instead would put the built-in panel's wallpaper onto an
+        // external monitor the user had deliberately left clear.
+        let main = CGMainDisplayID()
+        let recognised = coordinator.surfaces.keys
+            .contains { playback.session.wallpaperID(for: $0) != nil }
+
+        var restoredAny = false
+        for display in coordinator.surfaces.keys {
+            let fallback = (!recognised && display == main) ? playback.session.anyWallpaperID : nil
+            guard let wanted = playback.session.wallpaperID(for: display) ?? fallback,
+                  let item = library.item(withID: wanted), item.isPlayable
+            else { continue }
+            _ = playback.play(item, on: display)
+            restoredAny = true
+            log.info("restored \(item.title, privacy: .public) on display \(display)")
+        }
+        model?.refresh()
+        return restoredAny
     }
 
     /// Clicking the Dock icon with no window open should bring the library back, not do nothing.
