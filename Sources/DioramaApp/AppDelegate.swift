@@ -233,8 +233,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func play(_ item: WallpaperItem) {
         defer { model?.refresh() }
         guard let playback else { return }
-        // Every display gets the same wallpaper for now. Per-display assignment is a Pro feature
-        // in Stage 2 (PLAN.md §10.2) and needs UI that does not exist yet.
+        // The default action puts the wallpaper on every display. Choosing one display is the
+        // inspector's per-display buttons, through `WallpaperSystemModel.play(_:on:)`.
         for displayID in coordinator.surfaces.keys {
             let report = playback.play(item, on: displayID)
             if !report.isFullySupported {
