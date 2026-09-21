@@ -9,7 +9,7 @@ jobs:
   test:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check the toolchain can build for macOS 26
         # The runner image ships Xcode 26 as the default, so nothing needs selecting — but this
         # verifies it rather than assuming. The previous version pointed xcode-select at
@@ -30,7 +30,7 @@ jobs:
           fi
 
       - name: Cache vendored shader toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Vendor/install
