@@ -263,7 +263,7 @@ public struct SceneBuilder {
             // not the plan: it covers six common effects and flattens the rest.
             if let materials,
                let compiled = materials.effect(
-                   for: document, assets: assets, device: device, report: &report
+                   for: document, instance: effect, assets: assets, device: device, report: &report
                ) {
                 resolved.append(LayerEffect(.compiled(compiled), visibility: binding))
                 continue

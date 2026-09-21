@@ -70,3 +70,35 @@ struct SceneVisibilityTests {
         }
     }
 }
+
+/// A placed effect's own settings, which `scene.json` stores pass by pass.
+@Suite("SceneEffect passes")
+struct SceneEffectPassTests {
+
+    @Test("A placement's tuned values, variant and mask are all kept")
+    func decodesPlacementSettings() throws {
+        // Real content, trimmed: a shake confined to a painted mask.
+        let json = #"""
+        {"file":"effects/shake/effect.json","id":39,"visible":true,"passes":[{
+          "combos":{"DIRECTION":1},
+          "constantshadervalues":{"speed":1.85,"strength":0.15,"bounds":"0.99 0.997"},
+          "id":40,
+          "textures":[null,"masks/shake_mask_8433","util/white"]
+        }]}
+        """#
+        let effect = try JSONDecoder().decode(SceneEffect.self, from: Data(json.utf8))
+        let pass = try #require(effect.passes.first)
+        #expect(pass.combos == ["DIRECTION": 1])
+        #expect(pass.constantShaderValues["strength"] == .number(0.15))
+        #expect(pass.constantShaderValues["bounds"] == .string("0.99 0.997"))
+        #expect(pass.textures == [nil, "masks/shake_mask_8433", "util/white"])
+    }
+
+    @Test("An effect placed with no settings of its own has no passes, not an error")
+    func noPassesIsFine() throws {
+        let effect = try JSONDecoder().decode(
+            SceneEffect.self, from: Data(#"{"file":"effects/x.json"}"#.utf8)
+        )
+        #expect(effect.passes.isEmpty)
+    }
+}

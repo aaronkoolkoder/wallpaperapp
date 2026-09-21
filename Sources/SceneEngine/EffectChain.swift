@@ -297,8 +297,11 @@ extension MaterialCompiler {
     /// Returning nil rather than a partial chain is deliberate: half an effect looks like a
     /// rendering bug, while the built-in approximation the caller falls back to at least looks
     /// like the effect it is named after.
+    /// - Parameter instance: this placement's own settings from `scene.json` — tuned values,
+    ///   chosen variants and painted masks — layered over the effect file's, pass for pass.
     public func effect(
         for document: EffectDocument,
+        instance: SceneEffect? = nil,
         assets: SceneAssets,
         device: any MTLDevice,
         pixelFormat: MTLPixelFormat = .bgra8Unorm,
@@ -320,9 +323,19 @@ extension MaterialCompiler {
                 return nil
             }
 
-            // The effect's own combos and constants layer over the material's.
+            // Three layers, most general first: the material, the effect file's pass, and this
+            // placement's own settings for that pass.
+            let placement = index < (instance?.passes.count ?? 0) ? instance?.passes[index] : nil
             var merged = materialPass
             merged.combos.merge(pass.combos) { _, effectValue in effectValue }
+            if let placement {
+                merged.combos.merge(placement.combos) { _, placed in placed }
+                for (slot, path) in placement.textures.enumerated() {
+                    guard let path, !path.isEmpty else { continue }
+                    while merged.textures.count <= slot { merged.textures.append(nil) }
+                    merged.textures[slot] = path
+                }
+            }
 
             let program: MaterialProgram
             do {
@@ -336,6 +349,21 @@ extension MaterialCompiler {
             }
 
             var inputs: [Int: EffectInput] = [:]
+            // Textures named by the material or the placement — masks, noise, gradients. Slot 0
+            // is left alone: in an effect it is the picture being processed, whatever a
+            // material lists there. `bind` entries follow and win, because they are the
+            // effect's own plumbing.
+            for (slot, path) in merged.textures.enumerated() where slot > 0 {
+                guard let path, !path.isEmpty else { continue }
+                if let loaded = assets.sceneTexture(at: path, device: device) {
+                    inputs[slot] = .texture(loaded)
+                } else {
+                    report.add(
+                        .degraded, feature: "Effect",
+                        detail: "\(name): texture \(path) is missing"
+                    )
+                }
+            }
             for binding in pass.bindings {
                 if binding.isChainInput {
                     inputs[binding.index] = .chainInput
@@ -353,6 +381,9 @@ extension MaterialCompiler {
 
             var constants = materialPass.constantShaderValues
             constants.merge(pass.constantShaderValues) { _, effectValue in effectValue }
+            if let placement {
+                constants.merge(placement.constantShaderValues) { _, placed in placed }
+            }
 
             compiled.append(CompiledEffectPass(
                 program: program, target: pass.target, inputs: inputs, constants: constants

@@ -43,7 +43,8 @@ struct EffectBindingTests {
 
     private func makeWallpaper(
         finalShader: String, bind: String, fbos: String = "[]",
-        effectVisible: String = "true", layerVisible: String = "true"
+        effectVisible: String = "true", layerVisible: String = "true",
+        placementPasses: String = "[]"
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("DioramaBind-\(UUID().uuidString)", isDirectory: true)
@@ -85,7 +86,8 @@ struct EffectBindingTests {
           "objects": [
             { "image": "materials/red.json", "name": "base", "origin": "32 32 0",
               "size": "64 64", "visible": \(layerVisible),
-              "effects": [ { "file": "effects/probe.json", "visible": \(effectVisible) } ] }
+              "effects": [ { "file": "effects/probe.json", "visible": \(effectVisible),
+                             "passes": \(placementPasses) } ] }
           ]
         }
         """
@@ -221,6 +223,51 @@ struct EffectBindingTests {
         renderer.propertyOverrides = ["showBase": .bool(true)]
         pixel = try centre(renderer)
         #expect(pixel.g > 200, "showing the layer did nothing: \(pixel)")
+    }
+
+    /// A final pass whose colour comes only from its settings: `amount` sets the strength,
+    /// and the TINT variant moves it from red to blue.
+    private static let tunable = """
+    // [COMBO] {"material":"tint","combo":"TINT","type":"options","default":0}
+    varying vec2 v_TexCoord;
+    uniform sampler2D g_Texture0;
+    uniform float g_Amount; // {"material":"amount","label":"Amount","default":0}
+    void main() {
+    #if TINT == 1
+        gl_FragColor = vec4(0.0, 0.0, g_Amount, 1.0);
+    #else
+        gl_FragColor = vec4(g_Amount, 0.0, 0.0, 1.0);
+    #endif
+    }
+    """
+
+    @Test("A placed effect runs with the author's tuned values, not the shader's defaults")
+    func placementValuesApply() throws {
+        // 350 of 360 placed effects in the test library carry tuned values; ignoring them ran
+        // every one of them on its shader's defaults.
+        let tuned = try makeWallpaper(
+            finalShader: Self.tunable, bind: "[]",
+            placementPasses: #"[{}, {"constantshadervalues":{"amount":1.0}}]"#
+        )
+        defer { try? FileManager.default.removeItem(at: tuned) }
+        let pixel = try centre(try load(tuned).1)
+        #expect(pixel.r > 200 && pixel.b < 60, "the placement's amount was not applied: \(pixel)")
+
+        let defaults = try makeWallpaper(finalShader: Self.tunable, bind: "[]")
+        defer { try? FileManager.default.removeItem(at: defaults) }
+        let plain = try centre(try load(defaults).1)
+        #expect(plain.r < 30, "with no placement settings the shader default of 0 applies: \(plain)")
+    }
+
+    @Test("A placed effect runs the variant the author picked")
+    func placementCombosApply() throws {
+        let root = try makeWallpaper(
+            finalShader: Self.tunable, bind: "[]",
+            placementPasses: #"[{}, {"combos":{"TINT":1},"constantshadervalues":{"amount":1.0}}]"#
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pixel = try centre(try load(root).1)
+        #expect(pixel.b > 200 && pixel.r < 60, "the placement's variant was not used: \(pixel)")
     }
 
     @Test("A declared framebuffer scale is kept with the compiled effect")

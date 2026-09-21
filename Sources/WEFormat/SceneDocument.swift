@@ -153,12 +153,18 @@ public struct SceneEffect: Sendable, Hashable, Codable {
     /// Path of the effect definition inside the package, e.g. `"effects/water.json"`.
     public var file: String?
     public var visible: SceneVisibility?
+    /// This instance's own settings for each of the effect's passes, index for index.
+    public var passes: [SceneEffectPass]
 
-    public init(id: Int? = nil, name: String? = nil, file: String? = nil, visible: SceneVisibility? = nil) {
+    public init(
+        id: Int? = nil, name: String? = nil, file: String? = nil,
+        visible: SceneVisibility? = nil, passes: [SceneEffectPass] = []
+    ) {
         self.id = id
         self.name = name
         self.file = file
         self.visible = visible
+        self.passes = passes
     }
 
     public init(from decoder: Decoder) throws {
@@ -167,6 +173,7 @@ public struct SceneEffect: Sendable, Hashable, Codable {
         name = object.string("name")
         file = object.string("file")
         visible = object.value(SceneVisibility.self, "visible")
+        passes = object.value([SceneEffectPass].self, "passes") ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -175,6 +182,48 @@ public struct SceneEffect: Sendable, Hashable, Codable {
         try container.encodeIfPresent(name, "name")
         try container.encodeIfPresent(file, "file")
         try container.encodeIfPresent(visible, "visible")
+        if !passes.isEmpty { try container.encodeIfPresent(passes, "passes") }
+    }
+}
+
+/// What one placed instance of an effect changes about one of its passes.
+///
+/// The effect file describes the effect in general; this is how the author tuned it *here* —
+/// the strength and speed they dialled in, the variant they picked, and the mask they painted
+/// so that only the hair sways or only the water ripples. Ignored, every effect runs on its
+/// shader's defaults over the whole layer: 350 of the 360 effect instances in the test library
+/// carry tuned values, and 221 carry a painted mask.
+public struct SceneEffectPass: Sendable, Hashable, Codable {
+    public var combos: [String: Int]
+    /// Keyed by the uniform's `material` name, as the material's own values are.
+    public var constantShaderValues: [String: DynamicValue]
+    /// Entry `N` is the texture for sampler `g_TextureN`; nil leaves that sampler as it was.
+    public var textures: [String?]
+
+    public init(
+        combos: [String: Int] = [:],
+        constantShaderValues: [String: DynamicValue] = [:],
+        textures: [String?] = []
+    ) {
+        self.combos = combos
+        self.constantShaderValues = constantShaderValues
+        self.textures = textures
+    }
+
+    public init(from decoder: Decoder) throws {
+        let object = try CaseInsensitiveContainer(from: decoder)
+        combos = object.value([String: Int].self, "combos") ?? [:]
+        constantShaderValues = object.value(
+            [String: DynamicValue].self, "constantshadervalues"
+        ) ?? [:]
+        textures = object.value([String?].self, "textures") ?? []
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: AnyCodingKey.self)
+        try container.encodeIfPresent(combos, "combos")
+        try container.encodeIfPresent(constantShaderValues, "constantshadervalues")
+        try container.encodeIfPresent(textures, "textures")
     }
 }
 

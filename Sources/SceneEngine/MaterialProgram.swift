@@ -162,11 +162,18 @@ public final class MaterialCompiler {
         let vertexText = try provider.contents(of: shaderName + ".vert")
         let fragmentText = try provider.contents(of: shaderName + ".frag")
 
+        // Every slot the material names a texture for. A sampler annotated with a combo —
+        // `{"combo":"MASK"}` — switches that combo on when its slot is filled, which is what
+        // compiles the code that reads it.
+        let boundTextures = Set(pass.textures.enumerated().compactMap { slot, path in
+            (path?.isEmpty == false) ? slot : nil
+        })
         let (vertex, fragment) = try preprocessor.preprocessPair(
             vertex: ShaderSource(name: shaderName + ".vert", stage: .vertex, text: vertexText),
             fragment: ShaderSource(name: shaderName + ".frag", stage: .fragment, text: fragmentText),
             provider: provider,
-            comboOverrides: pass.combos
+            comboOverrides: pass.combos,
+            boundTextures: boundTextures
         )
 
         // Preprocessing is string work measured in microseconds and happens at import, so

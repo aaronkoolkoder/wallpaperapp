@@ -182,7 +182,8 @@ public struct ShaderPreprocessor: Sendable {
         vertex: ShaderSource,
         fragment: ShaderSource,
         provider: ShaderFileProvider,
-        comboOverrides: [String: Int] = [:]
+        comboOverrides: [String: Int] = [:],
+        boundTextures: Set<Int> = []
     ) throws -> (vertex: PreprocessedShader, fragment: PreprocessedShader) {
         let vertexScan = try varyingScan(of: vertex, provider: provider)
         let fragmentScan = try varyingScan(of: fragment, provider: provider)
@@ -194,15 +195,66 @@ public struct ShaderPreprocessor: Sendable {
             to: union, avoiding: vertexScan.reserved.union(fragmentScan.reserved)
         )
 
+        // Decided once for the pair, for the same reason as the varyings. A sampler is usually
+        // declared only in the fragment stage while its combo is tested in both — foliage
+        // sway's vertex shader computes the mask's UV under `#if MASK == 1` — so letting each
+        // stage decide alone would switch the mask on in one and off in the other.
+        var samplerCombos: [String: Int] = [:]
+        for source in [vertex, fragment] {
+            for (name, value) in try samplerComboValues(
+                of: source, provider: provider,
+                overrides: comboOverrides, boundTextures: boundTextures
+            ) {
+                samplerCombos[name] = max(samplerCombos[name] ?? 0, value)
+            }
+        }
+
         return (
             try preprocess(
                 vertex, provider: provider,
-                comboOverrides: comboOverrides, varyingLocations: locations
+                comboOverrides: comboOverrides, varyingLocations: locations,
+                samplerCombos: samplerCombos
             ),
             try preprocess(
                 fragment, provider: provider,
-                comboOverrides: comboOverrides, varyingLocations: locations
+                comboOverrides: comboOverrides, varyingLocations: locations,
+                samplerCombos: samplerCombos
             )
+        )
+    }
+
+    /// The combo each sampler switches on, and its value: 1 when a texture is bound to that
+    /// sampler — `boundTextures` holds the N of every bound `g_TextureN` — and 0 otherwise,
+    /// unless the material sets it outright.
+    static func samplerComboValues(
+        in uniforms: UniformParseResult, overrides: [String: Int], boundTextures: Set<Int>
+    ) -> [String: Int] {
+        var values: [String: Int] = [:]
+        for sampler in uniforms.samplers {
+            guard let name = sampler.combo else { continue }
+            let slot = sampler.name.hasPrefix("g_Texture")
+                ? Int(sampler.name.dropFirst("g_Texture".count)) : nil
+            let bound = slot.map { boundTextures.contains($0) } ?? false
+            values[name] = max(values[name] ?? 0, overrides[name] ?? (bound ? 1 : 0))
+        }
+        return values
+    }
+
+    private func samplerComboValues(
+        of source: ShaderSource, provider: ShaderFileProvider,
+        overrides: [String: Int], boundTextures: Set<Int>
+    ) throws -> [String: Int] {
+        let resolved: ResolvedShaderSource
+        do {
+            resolved = try includeResolver.resolve(
+                source, provider: provider, prelude: [Self.implicitHeader]
+            )
+        } catch let error as IncludeError {
+            throw ShaderPreprocessorError.includeFailed(error)
+        }
+        return Self.samplerComboValues(
+            in: UniformAnnotationParser.parse(resolved.text, shaderName: source.name),
+            overrides: overrides, boundTextures: boundTextures
         )
     }
 
@@ -212,7 +264,9 @@ public struct ShaderPreprocessor: Sendable {
         _ source: ShaderSource,
         provider: ShaderFileProvider,
         comboOverrides: [String: Int] = [:],
-        varyingLocations: [String: Int]? = nil
+        varyingLocations: [String: Int]? = nil,
+        boundTextures: Set<Int> = [],
+        samplerCombos: [String: Int]? = nil
     ) throws -> PreprocessedShader {
         // Wallpaper Engine's common header is implicit, not included. Most shipped shaders call
         // `mul`, `frac`, `texSample2D` and `CAST3` without ever naming a header — only 16 of the
@@ -260,6 +314,21 @@ public struct ShaderPreprocessor: Sendable {
                 continue
             }
             injectable.append((combo.name, value))
+        }
+
+        // Combos a sampler switches on. Without these the macro was never defined, `#if MASK ==
+        // 1` was always false, and a painted mask was compiled out of the very shader it was
+        // bound to. A pair passes in what it decided for both stages; a lone stage decides
+        // from its own samplers.
+        let declared = Set(comboResult.combos.map(\.name))
+        let samplerValues = samplerCombos ?? Self.samplerComboValues(
+            in: uniformResult, overrides: comboOverrides, boundTextures: boundTextures
+        )
+        for (name, value) in samplerValues.sorted(by: { $0.key < $1.key }) {
+            guard !declared.contains(name), !selfDefined.contains(name),
+                  !injectable.contains(where: { $0.name == name })
+            else { continue }
+            injectable.append((name, value))
         }
 
         // Every line a gathered declaration occupies, not just its first: one written across

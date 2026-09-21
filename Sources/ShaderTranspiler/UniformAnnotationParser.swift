@@ -137,6 +137,13 @@ public struct ShaderUniformDeclaration: Sendable, Hashable, Codable {
 
     public var editor: ShaderUniformEditor?
 
+    /// The combo a sampler switches on when a texture is bound to it, e.g. `MASK`.
+    ///
+    /// This is how an optional texture works: `uniform sampler2D g_Texture1; //
+    /// {"combo":"MASK", …}` with its sampling code inside `#if MASK == 1`. The combo is not a
+    /// `// [COMBO]` header, so it is only ever declared here.
+    public var combo: String?
+
     /// True when the declaration carried no annotation comment at all.
     ///
     /// Engine-supplied uniforms (`g_ModelViewProjection`, `g_Time`) are declared bare; only
@@ -160,6 +167,7 @@ public struct ShaderUniformDeclaration: Sendable, Hashable, Codable {
         defaultValue: ShaderUniformValue? = nil,
         range: ClosedRange<Double>? = nil,
         editor: ShaderUniformEditor? = nil,
+        combo: String? = nil,
         isUnannotated: Bool = false,
         sourceLine: Int? = nil,
         lineCount: Int = 1
@@ -172,6 +180,7 @@ public struct ShaderUniformDeclaration: Sendable, Hashable, Codable {
         self.defaultValue = defaultValue
         self.range = range
         self.editor = editor
+        self.combo = combo
         self.isUnannotated = isUnannotated
         self.sourceLine = sourceLine
         self.lineCount = max(1, lineCount)
@@ -315,6 +324,7 @@ public enum UniformAnnotationParser {
                 },
                 range: annotation.flatMap { range($0.value(for: "range")) },
                 editor: annotation.flatMap { editor($0.value(forAnyOf: ["type", "editor"])) },
+                combo: type.isOpaque ? annotation?.value(for: "combo")?.stringValue : nil,
                 isUnannotated: annotation == nil,
                 sourceLine: line,
                 lineCount: consumed
