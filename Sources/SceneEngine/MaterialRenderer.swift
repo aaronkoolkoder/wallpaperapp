@@ -80,6 +80,8 @@ public final class MaterialRenderer {
         /// `g_TextureNResolution` per sampler: allocation in `xy`, image in `zw`. Empty means
         /// "ask the textures themselves", which is right for anything not padded.
         public var textureSizes: [String: SIMD4<Float>]
+        /// Samplers whose texture was authored to tile, and so wraps rather than clamps.
+        public var repeatingTextures: Set<String>
         /// The user's own settings for this wallpaper, keyed as `project.json` keys them.
         public var overrides: [String: DynamicValue]
         public var engine: EngineUniforms
@@ -91,6 +93,7 @@ public final class MaterialRenderer {
             textures: [String: any MTLTexture] = [:],
             constants: [String: DynamicValue] = [:],
             textureSizes: [String: SIMD4<Float>] = [:],
+            repeatingTextures: Set<String> = [],
             overrides: [String: DynamicValue] = [:],
             engine: EngineUniforms = EngineUniforms(),
             wrapsUVs: Bool = false
@@ -100,6 +103,7 @@ public final class MaterialRenderer {
             self.textures = textures
             self.constants = constants
             self.textureSizes = textureSizes
+            self.repeatingTextures = repeatingTextures
             self.overrides = overrides
             self.engine = engine
             self.wrapsUVs = wrapsUVs
@@ -167,8 +171,10 @@ public final class MaterialRenderer {
         // Bound by name through the slots the translator reported. Binding by declaration order
         // would swap textures on any shader whose combos leave a sampler unused, because
         // SPIRV-Cross drops those and renumbers the rest.
-        let sampler = context.wrapsUVs ? samplerRepeat : samplerClamp
         for (name, slot) in program.textureSlots.sorted(by: { $0.value < $1.value }) {
+            // Per texture: masks clamp and tiling textures wrap, both in one pass.
+            let sampler = context.wrapsUVs || context.repeatingTextures.contains(name)
+                ? samplerRepeat : samplerClamp
             if let texture = context.textures[name] {
                 encoder.setFragmentTexture(texture, index: slot)
             } else {

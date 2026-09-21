@@ -62,6 +62,10 @@ public struct MaterialProgram: @unchecked Sendable {
     /// `textures` array is matched up: entry *n* feeds `g_TextureN`.
     public var declaredSamplers: [String]
 
+    /// Each sampler's `default` texture from its annotation — `util/noflow`, `util/white` —
+    /// which is what it reads when nothing else assigns it one.
+    public var samplerDefaults: [String: String] = [:]
+
     /// Unit-quad geometry laid out for this shader's own attributes.
     public var vertexBuffer: any MTLBuffer
     public var vertexBufferIndex: Int
@@ -255,6 +259,15 @@ public final class MaterialCompiler {
                 uniquingKeysWith: { first, _ in first }
             ),
             declaredSamplers: fragment.samplers.map(\.name),
+            samplerDefaults: Dictionary(
+                fragment.samplers.compactMap { sampler -> (String, String)? in
+                    guard case .texture(let path)? = sampler.defaultValue, !path.isEmpty else {
+                        return nil
+                    }
+                    return (sampler.name, path)
+                },
+                uniquingKeysWith: { first, _ in first }
+            ),
             vertexBuffer: geometry.buffer,
             vertexBufferIndex: vertexBufferIndex,
             vertexCount: geometry.count,

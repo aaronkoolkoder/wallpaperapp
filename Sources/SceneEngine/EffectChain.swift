@@ -174,6 +174,7 @@ public final class EffectChainRunner {
             // target it writes.
             var textures: [String: any MTLTexture] = [:]
             var sizes: [String: SIMD4<Float>] = [:]
+            var repeating: Set<String> = []
             for (position, name) in pass.program.declaredSamplers.enumerated() {
                 // A sampler not called `g_TextureN` has no index to be bound by; its position
                 // is the only thing left to go on.
@@ -182,6 +183,7 @@ public final class EffectChainRunner {
                 case .texture(let loaded):
                     textures[name] = loaded.texture
                     sizes[name] = loaded.resolution
+                    if loaded.repeats { repeating.insert(name) }
                 case .renderTarget(let target):
                     // A target not yet written is the chain's own input. Wallpaper Engine
                     // supplies several such names itself (`_rt_FullFrameBuffer` and friends);
@@ -278,6 +280,7 @@ public final class EffectChainRunner {
                     textures: textures,
                     constants: pass.constants,
                     textureSizes: sizes,
+                    repeatingTextures: repeating,
                     overrides: overrides,
                     engine: passEngine
                 ),
@@ -363,6 +366,17 @@ extension MaterialCompiler {
                         detail: "\(name): texture \(path) is missing"
                     )
                 }
+            }
+            // What is still unassigned reads its annotation's default, as in Wallpaper Engine.
+            // Slot 0 excepted: it is always the picture being processed.
+            for name in program.declaredSamplers {
+                guard let slot = EffectChainRunner.textureIndex(of: name), slot > 0,
+                      inputs[slot] == nil,
+                      !pass.bindings.contains(where: { $0.index == slot }),
+                      let reference = program.samplerDefaults[name],
+                      let loaded = assets.sceneTexture(at: reference, device: device)
+                else { continue }
+                inputs[slot] = .texture(loaded)
             }
             for binding in pass.bindings {
                 if binding.isChainInput {

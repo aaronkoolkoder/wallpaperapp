@@ -139,9 +139,10 @@ public struct SpriteSheet: Sendable, Hashable {
 /// int32  textureWidth, textureHeight
 /// int32  imageWidth,  imageHeight
 /// int32  _unknown
-/// "TEXB000{1,2,3}"\0           // mipmap container version
-///   [TEXB0003 only] int32 _unknown
-///   [TEXB0003 only] int32 freeImageFormat
+/// "TEXB000{1,2,3,4}"\0         // mipmap container version
+///   int32 imageCount
+///   [TEXB0003+]     int32 freeImageFormat
+///   [TEXB0004 only] int32 isVideo           // payload is an MP4 when set and the format is -1
 /// int32  mipmapCount
 /// mip × mipmapCount { width, height, isCompressed, uncompressedSize, compressedSize, data }
 /// [optional] "TEXS000{1,2,3}"  // animated sprite frame table
@@ -154,7 +155,7 @@ public struct SpriteSheet: Sendable, Hashable {
 public struct TEXTexture: Sendable {
 
     /// Revisions of the mipmap container this reader decodes.
-    public static let supportedContainerVersions = ["TEXB0001", "TEXB0002", "TEXB0003"]
+    public static let supportedContainerVersions = ["TEXB0001", "TEXB0002", "TEXB0003", "TEXB0004"]
 
     /// Revisions of the sprite table this reader decodes.
     public static let supportedSpriteVersions = ["TEXS0001", "TEXS0002", "TEXS0003"]
@@ -245,7 +246,7 @@ public struct TEXTexture: Sendable {
             if containerVersion.hasPrefix("TEXB") {
                 throw WEError.unsupportedVersion(containerVersion)
             }
-            throw WEError.badMagic(expected: "TEXB0001…TEXB0003", found: containerVersion)
+            throw WEError.badMagic(expected: "TEXB0001…TEXB0004", found: containerVersion)
         }
 
         // Every revision carries one undocumented int32 ahead of the mipmap count; TEXB0003
@@ -255,10 +256,21 @@ public struct TEXTexture: Sendable {
         // Getting this wrong is silent and total: skipping the leading field on TEXB0001/0002
         // makes the parser read it *as* the mipmap count, so every older texture decodes to
         // garbage rather than failing loudly.
-        _ = try reader.readInt32()                        // undocumented, all revisions
+        _ = try reader.readInt32()                        // image count, all revisions
         var freeImageFormat: Int32?
-        if containerVersion == "TEXB0003" {
+        if containerVersion == "TEXB0003" || containerVersion == "TEXB0004" {
             freeImageFormat = try reader.readInt32()
+        }
+        // TEXB0004 is TEXB0003 with one more field: whether the payload is an MP4 video rather
+        // than an image. Rejecting the revision outright threw away every texture written in
+        // it, and one of them was a whole wallpaper's background, which then drew as the
+        // white placeholder. An image payload reads exactly as TEXB0003 does; a video one
+        // cannot be decoded as a still, and is refused by name rather than as garbage.
+        if containerVersion == "TEXB0004" {
+            let isVideo = try reader.readInt32() == 1
+            if isVideo, (freeImageFormat ?? -1) < 0 {
+                throw WEError.unsupportedVersion("TEXB0004 video texture")
+            }
         }
 
         // --- Mipmaps ---------------------------------------------------------------

@@ -270,6 +270,52 @@ struct EffectBindingTests {
         #expect(pixel.b > 200 && pixel.r < 60, "the placement's variant was not used: \(pixel)")
     }
 
+    @Test("An unassigned sampler reads its annotation's default, including stock textures")
+    func samplerDefaultsAreBound() throws {
+        // Shake's direction map defaults to `util/noflow`. Left unbound it read the white
+        // placeholder — full-strength diagonal motion — where the author meant stillness.
+        let root = try makeWallpaper(
+            finalShader: """
+            varying vec2 v_TexCoord;
+            uniform sampler2D g_Texture0;
+            uniform sampler2D g_Texture1; // {"label":"direction","default":"util/noflow"}
+            void main() { gl_FragColor = vec4(texture2D(g_Texture1, v_TexCoord).rg, 0.0, 1.0); }
+            """,
+            bind: "[]"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (scene, renderer) = try load(root)
+        #expect(!scene.report.findings.contains { $0.detail?.contains("util/noflow") == true },
+                "the stock texture was reported missing")
+
+        let pixel = try centre(renderer)
+        #expect(abs(Int(pixel.r) - 127) <= 2 && abs(Int(pixel.g) - 127) <= 2,
+                "expected the neutral flow map, got \(pixel)")
+    }
+
+    @Test("A texture authored to tile wraps, one step apart is the same texel")
+    func tilingTexturesRepeat() throws {
+        // Noise is sampled far outside 0..1 on purpose. Clamped, every lookup past the edge
+        // returns the edge texel, and the noise stops being noise.
+        let root = try makeWallpaper(
+            finalShader: """
+            varying vec2 v_TexCoord;
+            uniform sampler2D g_Texture0;
+            uniform sampler2D g_Texture1; // {"label":"noise","default":"util/noise"}
+            void main() {
+                vec4 here = texture2D(g_Texture1, v_TexCoord * 0.3 + vec2(0.1, 0.1));
+                vec4 there = texture2D(g_Texture1, v_TexCoord * 0.3 + vec2(2.1, 3.1));
+                gl_FragColor = vec4(abs(here.rgb - there.rgb) * 8.0, 1.0);
+            }
+            """,
+            bind: "[]"
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let pixel = try centre(try load(root).1)
+        #expect(pixel.r < 8 && pixel.g < 8 && pixel.b < 8,
+                "lookups a whole number of tiles apart differ: \(pixel)")
+    }
+
     @Test("A declared framebuffer scale is kept with the compiled effect")
     func framebufferScalesAreKept() throws {
         let root = try makeWallpaper(

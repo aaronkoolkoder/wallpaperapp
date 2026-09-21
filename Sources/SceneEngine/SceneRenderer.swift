@@ -26,6 +26,8 @@ public final class SceneRenderer {
         /// `g_TextureNResolution` per sampler, which a padded texture makes differ from the
         /// allocation the renderer could otherwise infer on its own.
         var textureSizes: [String: SIMD4<Float>] = [:]
+        /// Samplers whose texture tiles.
+        var repeatingTextures: Set<String> = []
     }
 
     private let renderDevice: RenderDevice
@@ -261,6 +263,7 @@ public final class SceneRenderer {
                     textures: draw.textures,
                     constants: draw.constants,
                     textureSizes: draw.textureSizes,
+                    repeatingTextures: draw.repeatingTextures,
                     overrides: propertyOverrides,
                     engine: engineUniforms()
                 ),
@@ -437,7 +440,8 @@ public final class SceneRenderer {
             program: layer.program,
             textures: layer.materialTextures,
             constants: layer.materialConstants,
-            textureSizes: layer.materialTextureSizes
+            textureSizes: layer.materialTextureSizes,
+            repeatingTextures: layer.materialRepeatingTextures
         )
     }
 

@@ -155,6 +155,13 @@ public final class SceneAssets {
         if let cached = textureCache[path] { return cached }
 
         guard let data = data(for: path) else {
+            // A package's own file of that name wins; otherwise one of Wallpaper Engine's
+            // stock textures, which no package carries because every install already has them.
+            if let stock = StockTextures.name(for: path),
+               let made = StockTextures.make(stock, device: device) {
+                textureCache[path] = made
+                return made
+            }
             report.add(.degraded, feature: "Texture", detail: "\(path) is missing")
             return nil
         }
@@ -169,7 +176,8 @@ public final class SceneAssets {
                 imageSize: SIMD2(
                     Float(min(max(parsed.imageWidth, 1), texture.width)),
                     Float(min(max(parsed.imageHeight, 1), texture.height))
-                )
+                ),
+                repeats: !parsed.flags.contains(.clampUVs)
             )
             textureCache[path] = loaded
             return loaded

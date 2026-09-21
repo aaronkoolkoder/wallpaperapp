@@ -48,6 +48,9 @@ public struct RenderableLayer: @unchecked Sendable {
     /// `g_TextureNResolution` per sampler: allocation in `xy`, image in `zw`.
     public var materialTextureSizes: [String: SIMD4<Float>] = [:]
 
+    /// Samplers whose texture was authored to tile.
+    public var materialRepeatingTextures: Set<String> = []
+
     /// Whether the layer draws, given the user's current settings.
     ///
     /// A property-bound layer follows the property; anything else follows `isVisible`, which is
@@ -552,6 +555,7 @@ public struct SceneBuilder {
         layer.program = compiled?.program
         layer.materialTextures = compiled?.textures ?? [:]
         layer.materialTextureSizes = compiled?.sizes ?? [:]
+        layer.materialRepeatingTextures = compiled?.repeating ?? []
         layer.materialConstants = pass.constantShaderValues
         layer.uvScale = loaded?.uvScale ?? SIMD2(1, 1)
         layer.visibilityBinding = object.visible.flatMap { $0.isUserBound ? $0 : nil }
@@ -601,7 +605,8 @@ public struct SceneBuilder {
     ) -> (
         program: MaterialProgram,
         textures: [String: any MTLTexture],
-        sizes: [String: SIMD4<Float>]
+        sizes: [String: SIMD4<Float>],
+        repeating: Set<String>
     )? {
         guard let materials, materials.isAvailable else { return nil }
         guard let shader = pass.shader, !shader.isEmpty else { return nil }
@@ -647,27 +652,40 @@ public struct SceneBuilder {
         // layer flat white.
         var textures: [String: any MTLTexture] = [:]
         var sizes: [String: SIMD4<Float>] = [:]
+        var repeating: Set<String> = []
+        func bind(_ loaded: SceneTexture, to sampler: String) {
+            textures[sampler] = loaded.texture
+            sizes[sampler] = loaded.resolution
+            if loaded.repeats { repeating.insert(sampler) }
+        }
         for (index, path) in pass.textures.enumerated() {
             let samplerName = Self.samplerName(
                 forTextureSlot: index, declared: program.declaredSamplers
             )
             if index == 0, let primaryTexture {
-                textures[samplerName] = primaryTexture.texture
-                sizes[samplerName] = primaryTexture.resolution
+                bind(primaryTexture, to: samplerName)
                 continue
             }
             guard let path, !path.isEmpty else { continue }
             if let loaded = assets.sceneTexture(at: path, device: device) {
-                textures[samplerName] = loaded.texture
-                sizes[samplerName] = loaded.resolution
+                bind(loaded, to: samplerName)
             }
         }
         if textures.isEmpty, let primaryTexture, let first = program.declaredSamplers.first {
-            textures[first] = primaryTexture.texture
-            sizes[first] = primaryTexture.resolution
+            bind(primaryTexture, to: first)
+        }
+        // Anything still unassigned reads its annotation's default, as it would in Wallpaper
+        // Engine. Left unbound it read the white placeholder instead — harmless for a mask
+        // that defaults to `util/white`, but a flow map that defaults to `util/noflow` reads
+        // white as full-strength motion.
+        for name in program.declaredSamplers where textures[name] == nil {
+            guard let reference = program.samplerDefaults[name],
+                  let loaded = assets.sceneTexture(at: reference, device: device)
+            else { continue }
+            bind(loaded, to: name)
         }
 
-        return (program, textures, sizes)
+        return (program, textures, sizes, repeating)
     }
 }
 
@@ -680,10 +698,16 @@ public struct SceneBuilder {
 public struct SceneTexture {
     public let texture: any MTLTexture
     public let imageSize: SIMD2<Float>
+    /// Whether sampling outside 0..1 wraps around. Authors choose per texture — every painted
+    /// mask in the test library clamps, while 30 layer textures and 15 effect assets are
+    /// marked to tile — and noise is sampled far outside 0..1 on purpose, so one address mode
+    /// for everything is wrong for someone.
+    public let repeats: Bool
 
-    public init(texture: any MTLTexture, imageSize: SIMD2<Float>) {
+    public init(texture: any MTLTexture, imageSize: SIMD2<Float>, repeats: Bool = false) {
         self.texture = texture
         self.imageSize = imageSize
+        self.repeats = repeats
     }
 
     /// The whole allocation, padding included.

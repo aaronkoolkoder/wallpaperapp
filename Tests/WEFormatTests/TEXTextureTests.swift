@@ -18,6 +18,8 @@ struct TEXBuilder {
     /// A value of 0 or above means each level is an encoded image file — 2 is JPEG, 13 is PNG.
     /// Defaulting to 0 made every fixture claim to be a BMP, which is not what a raw texture is.
     var freeImageFormat: Int32 = -1
+    /// TEXB0004's extra field: set means the payload is an MP4 rather than an image.
+    var isVideo: Int32 = 0
     var mipmaps: [(w: Int32, h: Int32, payload: Data, compress: Bool)] = []
     var spriteSheet: (version: String, frames: [[Float]])?
 
@@ -34,7 +36,11 @@ struct TEXBuilder {
         data.appendInt32(0)                     // unknown header field
 
         data.appendMagic(containerVersion)
-        if containerVersion == "TEXB0003" {
+        if containerVersion == "TEXB0004" {
+            data.appendInt32(1)                 // image count
+            data.appendInt32(freeImageFormat)
+            data.appendInt32(isVideo)
+        } else if containerVersion == "TEXB0003" {
             data.appendInt32(0)                 // unknown
             data.appendInt32(freeImageFormat)
         } else {
@@ -92,6 +98,45 @@ struct TEXTextureTests {
 
     private func rgba(_ count: Int) -> Data {
         Data((0 ..< count * 4).map { UInt8($0 % 251) })
+    }
+
+    // MARK: - Container revisions
+
+    @Test("A TEXB0004 texture reads like TEXB0003 when it holds an image")
+    func readsRevisionFour() throws {
+        // Seen in real content as a whole wallpaper's background. Refusing the revision drew
+        // that background as the white placeholder.
+        var builder = TEXBuilder()
+        builder.containerVersion = "TEXB0004"
+        builder.mipmaps = [(4, 4, rgba(16), false), (2, 2, rgba(4), false)]
+        let texture = try TEXTexture(data: builder.build())
+
+        #expect(texture.containerVersion == "TEXB0004")
+        #expect(texture.mipmaps.map(\.width) == [4, 2])
+        #expect(texture.mipmaps[0].data == rgba(16))
+        #expect(texture.mipmaps[1].data == rgba(4))
+    }
+
+    @Test("A TEXB0004 encoded image keeps its FreeImage format")
+    func revisionFourEncodedImage() throws {
+        var builder = TEXBuilder()
+        builder.containerVersion = "TEXB0004"
+        builder.freeImageFormat = 13            // PNG
+        builder.mipmaps = [(4, 4, Data([0x89, 0x50, 0x4E, 0x47]), false)]
+        let texture = try TEXTexture(data: builder.build())
+        #expect(texture.freeImageFormat == 13)
+        #expect(texture.mipmaps.first?.isEncodedImage == true)
+    }
+
+    @Test("A TEXB0004 video texture is refused by name, not decoded as garbage")
+    func revisionFourVideoIsRefused() {
+        var builder = TEXBuilder()
+        builder.containerVersion = "TEXB0004"
+        builder.isVideo = 1
+        builder.mipmaps = [(4, 4, rgba(16), false)]
+        #expect(throws: WEError.unsupportedVersion("TEXB0004 video texture")) {
+            try TEXTexture(data: builder.build())
+        }
     }
 
     // MARK: - Round trip
