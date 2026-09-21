@@ -28,6 +28,9 @@ public struct RenderableLayer: @unchecked Sendable {
     /// Post-process chain applied to this layer alone, before it is composited.
     public var effects: [LayerEffect] = []
     public var isVisible: Bool
+    /// Set when the object's visibility is tied to a user property; `isVisible` then only
+    /// holds the value it was saved with. See `isShown(with:)`.
+    public var visibilityBinding: SceneVisibility?
 
     /// The material's own compiled shader, when it could be built.
     ///
@@ -44,6 +47,14 @@ public struct RenderableLayer: @unchecked Sendable {
 
     /// `g_TextureNResolution` per sampler: allocation in `xy`, image in `zw`.
     public var materialTextureSizes: [String: SIMD4<Float>] = [:]
+
+    /// Whether the layer draws, given the user's current settings.
+    ///
+    /// A property-bound layer follows the property; anything else follows `isVisible`, which is
+    /// also what scripts write to.
+    public func isShown(with properties: [String: DynamicValue]) -> Bool {
+        visibilityBinding?.isVisible(with: properties) ?? isVisible
+    }
 
     /// Model matrix with a camera offset folded into the translation.
     public func modelMatrix(cameraOffset: SIMD2<Float>) -> simd_float4x4 {
@@ -116,7 +127,9 @@ public struct RenderableScene: @unchecked Sendable {
         guard travel > 0 else { return .zero }
 
         var worst = SIMD2<Float>.zero
-        for layer in layers where layer.isVisible {
+        // Including layers the user can switch on: sizing the margin only for what shows now
+        // would make the whole scene zoom the moment one of them was turned on.
+        for layer in layers where layer.isVisible || layer.visibilityBinding != nil {
             worst = simd_max(worst, abs(layer.parallaxDepth) * travel)
         }
         return worst
@@ -233,7 +246,11 @@ public struct SceneBuilder {
     ) -> [LayerEffect] {
         var resolved: [LayerEffect] = []
         for effect in effects {
-            if let visible = effect.visible?.staticValue, !visible { continue }
+            // A constant `false` can never show, so it is not worth compiling. A property-bound
+            // effect is compiled whatever its current state: the user can switch it on at any
+            // moment, and it has to be ready when they do.
+            let binding = effect.visible.flatMap { $0.isUserBound ? $0 : nil }
+            if binding == nil, let visible = effect.visible?.staticValue, !visible { continue }
             guard let path = effect.file else { continue }
             guard let data = assets.data(for: path) ?? assets.data(for: path + ".json"),
                   let document = try? JSONDecoder().decode(EffectDocument.self, from: data)
@@ -248,12 +265,12 @@ public struct SceneBuilder {
                let compiled = materials.effect(
                    for: document, assets: assets, device: device, report: &report
                ) {
-                resolved.append(.compiled(compiled))
+                resolved.append(LayerEffect(.compiled(compiled), visibility: binding))
                 continue
             }
 
             if let post = Self.postEffect(for: document) {
-                resolved.append(.builtIn(post))
+                resolved.append(LayerEffect(.builtIn(post), visibility: binding))
                 report.add(
                     .degraded, feature: "Effect",
                     detail: "\(document.name ?? path) is approximated rather than run as written"
@@ -446,7 +463,7 @@ public struct SceneBuilder {
 
         // Size comes from the rasterised bitmap, not from the object's declared size: the text
         // has a real aspect ratio and forcing it into a declared box would stretch the glyphs.
-        return RenderableLayer(
+        var layer = RenderableLayer(
             name: object.name ?? "Text",
             origin: SIMD3(Float(origin.x), Float(origin.y), Float(origin.z)),
             angles: SIMD3(
@@ -463,6 +480,8 @@ public struct SceneBuilder {
             parallaxDepth: SIMD2(Float(parallax?.x ?? 0), Float(parallax?.y ?? 0)),
             isVisible: object.visible?.staticValue ?? true
         )
+        layer.visibilityBinding = object.visible.flatMap { $0.isUserBound ? $0 : nil }
+        return layer
     }
 
     private func buildImageLayer(
@@ -535,6 +554,7 @@ public struct SceneBuilder {
         layer.materialTextureSizes = compiled?.sizes ?? [:]
         layer.materialConstants = pass.constantShaderValues
         layer.uvScale = loaded?.uvScale ?? SIMD2(1, 1)
+        layer.visibilityBinding = object.visible.flatMap { $0.isUserBound ? $0 : nil }
         return layer
     }
 

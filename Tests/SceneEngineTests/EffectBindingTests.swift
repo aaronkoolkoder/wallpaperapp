@@ -42,7 +42,8 @@ struct EffectBindingTests {
     """
 
     private func makeWallpaper(
-        finalShader: String, bind: String, fbos: String = "[]"
+        finalShader: String, bind: String, fbos: String = "[]",
+        effectVisible: String = "true", layerVisible: String = "true"
     ) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("DioramaBind-\(UUID().uuidString)", isDirectory: true)
@@ -83,8 +84,8 @@ struct EffectBindingTests {
                        "clearcolor": "0 0 0" },
           "objects": [
             { "image": "materials/red.json", "name": "base", "origin": "32 32 0",
-              "size": "64 64", "visible": true,
-              "effects": [ { "file": "effects/probe.json", "visible": true } ] }
+              "size": "64 64", "visible": \(layerVisible),
+              "effects": [ { "file": "effects/probe.json", "visible": \(effectVisible) } ] }
           ]
         }
         """
@@ -157,6 +158,71 @@ struct EffectBindingTests {
                 "expected the green target, got \(pixel)")
     }
 
+    /// A final pass that shows the green target, so green means "the effect ran".
+    private static let showStage = """
+    varying vec2 v_TexCoord;
+    uniform sampler2D g_Texture0;
+    void main() { gl_FragColor = texture2D(g_Texture0, v_TexCoord); }
+    """
+
+    @Test("An effect shipped switched off stays off until the user switches it on — live")
+    func optionalEffectFollowsItsProperty() throws {
+        let root = try makeWallpaper(
+            finalShader: Self.showStage,
+            bind: #"[{"index":0,"name":"_rt_stage"}]"#,
+            effectVisible: #"{"user":"grain","value":false}"#
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (_, renderer) = try load(root)
+
+        var pixel = try centre(renderer)
+        #expect(pixel.r > 200 && pixel.g < 60, "the effect ran although it shipped off: \(pixel)")
+
+        // No reload: the same renderer, with the setting changed underneath it.
+        renderer.propertyOverrides = ["grain": .bool(true)]
+        pixel = try centre(renderer)
+        #expect(pixel.g > 200 && pixel.r < 60, "switching it on did nothing: \(pixel)")
+
+        renderer.propertyOverrides = ["grain": .bool(false)]
+        pixel = try centre(renderer)
+        #expect(pixel.r > 200 && pixel.g < 60, "switching it off again did nothing: \(pixel)")
+    }
+
+    @Test("An effect tied to a list option runs only while that option is chosen")
+    func listBoundEffect() throws {
+        let root = try makeWallpaper(
+            finalShader: Self.showStage,
+            bind: #"[{"index":0,"name":"_rt_stage"}]"#,
+            effectVisible: #"{"user":{"name":"style","condition":"2"},"value":false}"#
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (_, renderer) = try load(root)
+
+        renderer.propertyOverrides = ["style": .number(2)]
+        #expect(try centre(renderer).g > 200)
+        renderer.propertyOverrides = ["style": .string("1")]
+        #expect(try centre(renderer).r > 200)
+    }
+
+    @Test("A layer shipped hidden stays hidden until the user shows it")
+    func optionalLayerFollowsItsProperty() throws {
+        // The scene's clear colour is black, so a hidden layer leaves black behind it.
+        let root = try makeWallpaper(
+            finalShader: Self.showStage,
+            bind: #"[{"index":0,"name":"_rt_stage"}]"#,
+            layerVisible: #"{"user":"showBase","value":false}"#
+        )
+        defer { try? FileManager.default.removeItem(at: root) }
+        let (_, renderer) = try load(root)
+
+        var pixel = try centre(renderer)
+        #expect(pixel.r < 30 && pixel.g < 30 && pixel.b < 30, "a hidden layer drew: \(pixel)")
+
+        renderer.propertyOverrides = ["showBase": .bool(true)]
+        pixel = try centre(renderer)
+        #expect(pixel.g > 200, "showing the layer did nothing: \(pixel)")
+    }
+
     @Test("A declared framebuffer scale is kept with the compiled effect")
     func framebufferScalesAreKept() throws {
         let root = try makeWallpaper(
@@ -171,7 +237,7 @@ struct EffectBindingTests {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let (scene, renderer) = try load(root)
-        guard case .compiled(let effect) = try #require(scene.layers.first?.effects.first) else {
+        guard case .compiled(let effect) = try #require(scene.layers.first?.effects.first).implementation else {
             Issue.record("the probe effect did not compile")
             return
         }

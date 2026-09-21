@@ -63,7 +63,7 @@ struct EffectTests {
         #expect(scene.sceneEffects.count == 1)
         // Scene bloom is declared on `general` rather than as an effect file, so there is no
         // author shader to compile and the built-in one is the faithful answer.
-        if case .builtIn(.bloom(let threshold, let intensity)) = scene.sceneEffects.first {
+        if case .builtIn(.bloom(let threshold, let intensity)) = scene.sceneEffects.first?.implementation {
             #expect(abs(threshold - 0.4) < 0.001)
             #expect(abs(intensity - 1.5) < 0.001)
         } else {

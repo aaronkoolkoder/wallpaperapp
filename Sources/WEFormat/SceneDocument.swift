@@ -9,6 +9,14 @@ import Foundation
 public enum SceneVisibility: Sendable, Hashable, Codable {
     case constant(Bool)
     case expression(String)
+    /// Bound to one of the wallpaper's user properties.
+    ///
+    /// `condition` nil means the property is itself a checkbox. Otherwise the property is a
+    /// list, and the object shows while the option whose value is `condition` is chosen — how
+    /// an author offers "style 1 / style 2" by keeping every variant in the scene and showing
+    /// one. `value` is what the editor showed when the scene was saved, which is also what the
+    /// user sees until they change the property.
+    case userProperty(name: String, condition: String?, value: Bool)
 
     /// Value to use before any expression has been evaluated. Objects default to visible,
     /// matching the editor's own behaviour for an unbound expression.
@@ -16,10 +24,61 @@ public enum SceneVisibility: Sendable, Hashable, Codable {
         switch self {
         case let .constant(value): return value
         case .expression: return true
+        case let .userProperty(_, _, value): return value
         }
     }
 
+    /// Whether this is shown given the user's current settings, keyed as `project.json`
+    /// keys them. A property the user has not touched keeps the value it was saved with.
+    public func isVisible(with properties: [String: DynamicValue]) -> Bool {
+        guard case let .userProperty(name, condition, value) = self else { return staticValue }
+        guard let current = properties[name] else { return value }
+        guard let condition else { return current.boolValue ?? value }
+        return Self.optionText(current) == condition
+    }
+
+    /// Whether this can change while the wallpaper runs.
+    public var isUserBound: Bool {
+        if case .userProperty = self { return true }
+        return false
+    }
+
+    /// A list property's value as the text a condition is written in: `2`, not `2.0`.
+    private static func optionText(_ value: DynamicValue) -> String? {
+        switch value {
+        case let .string(text): return text
+        case let .number(number):
+            return number.rounded() == number ? String(Int(number)) : String(number)
+        case let .bool(flag): return flag ? "1" : "0"
+        default: return nil
+        }
+    }
+
+    private enum BindingKeys: String, CodingKey { case user, value, name, condition }
+
     public init(from decoder: Decoder) throws {
+        // The bound form is an object. It used to fall through every case below and be read as
+        // "no visibility given" — visible — so an effect the author shipped switched *off*
+        // was drawn anyway: 38 objects and effects across the test library, film grain among
+        // them, which whited out the scenes it was left running in.
+        if let binding = try? decoder.container(keyedBy: BindingKeys.self),
+           binding.contains(.value) {
+            let value = Self.flag(in: binding) ?? true
+            if let name = try? binding.decode(String.self, forKey: .user) {
+                self = .userProperty(name: name, condition: nil, value: value)
+            } else if let user = try? binding.nestedContainer(keyedBy: BindingKeys.self, forKey: .user),
+                      let name = try? user.decode(String.self, forKey: .name) {
+                let condition = (try? user.decode(String.self, forKey: .condition))
+                    ?? (try? user.decode(Double.self, forKey: .condition)).map { Self.optionText(.number($0)) ?? "" }
+                self = .userProperty(name: name, condition: condition, value: value)
+            } else {
+                // Driven by a script rather than a property. What the editor saved is the best
+                // available answer until scripts can drive visibility.
+                self = .constant(value)
+            }
+            return
+        }
+
         let container = try decoder.singleValueContainer()
         if let value = try? container.decode(Bool.self) {
             self = .constant(value)
@@ -34,16 +93,38 @@ public enum SceneVisibility: Sendable, Hashable, Codable {
         } else {
             throw DecodingError.typeMismatch(
                 SceneVisibility.self,
-                .init(codingPath: container.codingPath, debugDescription: "expected a bool or an expression")
+                .init(codingPath: container.codingPath, debugDescription: "expected a bool, an expression, or a property binding")
             )
         }
     }
 
+    private static func flag(in binding: KeyedDecodingContainer<BindingKeys>) -> Bool? {
+        if let value = try? binding.decode(Bool.self, forKey: .value) { return value }
+        if let value = try? binding.decode(Double.self, forKey: .value) { return value != 0 }
+        if let value = try? binding.decode(String.self, forKey: .value) {
+            return ["true", "1", "yes"].contains(value.lowercased())
+        }
+        return nil
+    }
+
     public func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
         switch self {
-        case let .constant(value): try container.encode(value)
-        case let .expression(text): try container.encode(text)
+        case let .constant(value):
+            var container = encoder.singleValueContainer()
+            try container.encode(value)
+        case let .expression(text):
+            var container = encoder.singleValueContainer()
+            try container.encode(text)
+        case let .userProperty(name, condition, value):
+            var container = encoder.container(keyedBy: BindingKeys.self)
+            if let condition {
+                var user = container.nestedContainer(keyedBy: BindingKeys.self, forKey: .user)
+                try user.encode(name, forKey: .name)
+                try user.encode(condition, forKey: .condition)
+            } else {
+                try container.encode(name, forKey: .user)
+            }
+            try container.encode(value, forKey: .value)
         }
     }
 }

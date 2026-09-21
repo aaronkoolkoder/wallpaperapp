@@ -193,8 +193,12 @@ public final class SceneRenderer {
             drawableSize: SIMD2(Float(target.width), Float(target.height))
         )
 
-        let hasEffects = !scene.sceneEffects.isEmpty
-            || workingLayers.contains { !$0.effects.isEmpty }
+        // Only what is actually running counts: a scene whose sole effect is an optional one
+        // the user has switched off should take the fast path, not pay for an accumulator.
+        let hasEffects = !scene.sceneEffects.active(with: propertyOverrides).isEmpty
+            || workingLayers.contains {
+                $0.isShown(with: propertyOverrides) && !$0.effects.active(with: propertyOverrides).isEmpty
+            }
 
         if hasEffects {
             renderWithEffects(
@@ -287,7 +291,7 @@ public final class SceneRenderer {
         // Group into runs so a sequence of approximated steps stays one call.
         var groups: [[LayerEffect]] = []
         for step in chain {
-            if case .builtIn = step, case .builtIn = groups.last?.last {
+            if case .builtIn = step.implementation, case .builtIn = groups.last?.last?.implementation {
                 groups[groups.count - 1].append(step)
             } else {
                 groups.append([step])
@@ -321,7 +325,7 @@ public final class SceneRenderer {
                 target = pooled.texture
             }
 
-            if case .compiled(let effect) = group[0], group.count == 1 {
+            if case .compiled(let effect) = group[0].implementation, group.count == 1 {
                 let ran = effectRunner.run(
                     effect, source: current, destination: target,
                     overrides: propertyOverrides, engine: engineUniforms(),
@@ -404,7 +408,7 @@ public final class SceneRenderer {
         scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [SceneDraw]
     ) {
         draws.removeAll(keepingCapacity: true)
-        for sceneLayer in workingLayers where sceneLayer.isVisible {
+        for sceneLayer in workingLayers where sceneLayer.isShown(with: propertyOverrides) {
             draws.append(Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset))
         }
 
@@ -479,10 +483,11 @@ public final class SceneRenderer {
 
         var batch: [SceneDraw] = []
 
-        for sceneLayer in workingLayers where sceneLayer.isVisible {
+        for sceneLayer in workingLayers where sceneLayer.isShown(with: propertyOverrides) {
             let draw = Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset)
+            let effects = sceneLayer.effects.active(with: propertyOverrides)
 
-            guard !sceneLayer.effects.isEmpty else {
+            guard !effects.isEmpty else {
                 batch.append(draw)
                 continue
             }
@@ -518,7 +523,7 @@ public final class SceneRenderer {
             }
 
             applyEffectChain(
-                sceneLayer.effects,
+                effects,
                 source: isolated.texture,
                 destination: processed.texture,
                 buffer: buffer
@@ -557,7 +562,7 @@ public final class SceneRenderer {
 
         // Scene-wide chain straight into the target.
         applyEffectChain(
-            scene.sceneEffects,
+            scene.sceneEffects.active(with: propertyOverrides),
             source: accumulator.texture,
             destination: target,
             buffer: buffer

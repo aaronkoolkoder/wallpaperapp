@@ -48,20 +48,48 @@ public struct CompiledEffect: @unchecked Sendable {
 /// that could not falls back to a built-in approximation. Keeping both in one ordered list is
 /// what preserves the author's order across the two kinds — running all the compiled ones and
 /// then all the approximations would change the result of any chain that mixes them.
-public enum LayerEffect: @unchecked Sendable {
-    case compiled(CompiledEffect)
-    case builtIn(PostEffect)
+public struct LayerEffect: @unchecked Sendable {
+    public enum Implementation {
+        case compiled(CompiledEffect)
+        case builtIn(PostEffect)
+    }
+
+    public var implementation: Implementation
+
+    /// Nil for an effect that always runs. Otherwise the effect is tied to one of the
+    /// wallpaper's user properties and runs only while that property says so — the author's
+    /// way of shipping an optional effect, often switched off by default. Evaluated every
+    /// frame, so changing the property in the inspector takes effect without a reload.
+    public var visibility: SceneVisibility?
+
+    public init(_ implementation: Implementation, visibility: SceneVisibility? = nil) {
+        self.implementation = implementation
+        self.visibility = visibility
+    }
+
+    public static func compiled(_ effect: CompiledEffect) -> LayerEffect {
+        LayerEffect(.compiled(effect))
+    }
+
+    public static func builtIn(_ effect: PostEffect) -> LayerEffect {
+        LayerEffect(.builtIn(effect))
+    }
 
     public var debugName: String {
-        switch self {
+        switch implementation {
         case .compiled(let effect): effect.name
         case .builtIn(let effect): effect.debugName
         }
     }
 
     public var isCompiled: Bool {
-        if case .compiled = self { return true }
+        if case .compiled = implementation { return true }
         return false
+    }
+
+    /// Whether this runs, given the user's current settings.
+    public func isActive(with properties: [String: DynamicValue]) -> Bool {
+        visibility?.isVisible(with: properties) ?? true
     }
 }
 
@@ -69,9 +97,18 @@ public extension Array where Element == LayerEffect {
     /// The approximated steps only, for paths that cannot run compiled chains.
     var builtInOnly: [PostEffect] {
         compactMap { step in
-            if case .builtIn(let effect) = step { return effect }
+            if case .builtIn(let effect) = step.implementation { return effect }
             return nil
         }
+    }
+
+    /// The steps that run given the user's current settings.
+    ///
+    /// Returns the array untouched when nothing in it is bound to a property, which is almost
+    /// always, so the common frame allocates nothing here.
+    func active(with properties: [String: DynamicValue]) -> [LayerEffect] {
+        guard contains(where: { $0.visibility != nil }) else { return self }
+        return filter { $0.isActive(with: properties) }
     }
 }
 
