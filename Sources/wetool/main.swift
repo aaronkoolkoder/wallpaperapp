@@ -181,9 +181,21 @@ case "tex":
         for (index, mip) in texture.mipmaps.enumerated() {
             print("  [\(index)] \(mip.width)x\(mip.height)  \(byteCount(mip.data.count))\(mip.wasCompressed ? "  (lz4)" : "")")
         }
-        if let sheet = texture.spriteSheet {
-            print("sprites:   \(sheet.version), \(sheet.frames.count) frame(s)")
+        if texture.images.count > 1 {
+            print("images:    \(texture.images.count)")
         }
+        if texture.isVideo {
+            print("video:     \(byteCount(texture.videoData?.count ?? 0)) MP4")
+        }
+        if let sheet = texture.spriteSheet {
+            let pages = Set(sheet.frames.map(\.imageIndex)).sorted()
+            print("sprites:   \(sheet.version), \(sheet.frames.count) frame(s) on image(s) \(pages), "
+                  + String(format: "%.2fs loop", sheet.loopDuration))
+            if let first = sheet.frames.first {
+                print("           first: \(Int(first.width))x\(Int(first.height)) at (\(Int(first.x)), \(Int(first.y)))")
+            }
+        }
+        for warning in texture.warnings { print("warning:   \(warning)") }
     } catch { fail("\(error)") }
 
 case "manifest":

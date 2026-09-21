@@ -21,7 +21,15 @@ struct TEXBuilder {
     /// TEXB0004's extra field: set means the payload is an MP4 rather than an image.
     var isVideo: Int32 = 0
     var mipmaps: [(w: Int32, h: Int32, payload: Data, compress: Bool)] = []
-    var spriteSheet: (version: String, frames: [[Float]])?
+    /// Further pages of a multi-image animation, each its own mip chain.
+    var extraImages: [[(w: Int32, h: Int32, payload: Data, compress: Bool)]] = []
+    /// Writes each level the way a video texture stores its MP4: no pixel size, the file's
+    /// length as `compressedSize`.
+    var videoLayout = false
+    /// A `TEXS` table as real files write it. `rect` is x, y, width, widthY, heightX, height.
+    var spriteSheet: (
+        version: String, gif: (Int32, Int32)?, frames: [(image: Int32, duration: Float, rect: [Float])]
+    )?
 
     func build() -> Data {
         var data = Data()
@@ -36,42 +44,56 @@ struct TEXBuilder {
         data.appendInt32(0)                     // unknown header field
 
         data.appendMagic(containerVersion)
+        data.appendInt32(Int32(1 + extraImages.count))     // image count
         if containerVersion == "TEXB0004" {
-            data.appendInt32(1)                 // image count
             data.appendInt32(freeImageFormat)
             data.appendInt32(isVideo)
         } else if containerVersion == "TEXB0003" {
-            data.appendInt32(0)                 // unknown
             data.appendInt32(freeImageFormat)
-        } else {
-            data.appendInt32(0)                 // unknown
         }
-        data.appendInt32(Int32(mipmaps.count))
 
-        for mip in mipmaps {
-            data.appendInt32(mip.w)
-            data.appendInt32(mip.h)
-            if mip.compress {
-                let compressed = Self.lz4(mip.payload)
-                data.appendInt32(1)
-                data.appendInt32(Int32(mip.payload.count))
-                data.appendInt32(Int32(compressed.count))
-                data.append(compressed)
-            } else {
-                data.appendInt32(0)
-                data.appendInt32(Int32(mip.payload.count))
-                data.appendInt32(Int32(mip.payload.count))
-                data.append(mip.payload)
+        for image in [mipmaps] + extraImages {
+            data.appendInt32(Int32(image.count))
+            for mip in image {
+                data.appendInt32(mip.w)
+                data.appendInt32(mip.h)
+                if videoLayout {
+                    data.appendInt32(0)
+                    data.appendInt32(0)
+                    data.appendInt32(Int32(mip.payload.count))
+                    data.append(mip.payload)
+                } else if mip.compress {
+                    let compressed = Self.lz4(mip.payload)
+                    data.appendInt32(1)
+                    data.appendInt32(Int32(mip.payload.count))
+                    data.appendInt32(Int32(compressed.count))
+                    data.append(compressed)
+                } else {
+                    data.appendInt32(0)
+                    data.appendInt32(Int32(mip.payload.count))
+                    data.appendInt32(Int32(mip.payload.count))
+                    data.append(mip.payload)
+                }
             }
         }
 
         if let sheet = spriteSheet {
             data.appendMagic(sheet.version)
             data.appendInt32(Int32(sheet.frames.count))
+            if let gif = sheet.gif {
+                data.appendInt32(gif.0)
+                data.appendInt32(gif.1)
+            }
             for frame in sheet.frames {
-                data.appendInt32(0)             // image index
-                data.appendFloat(16)            // duration
-                for component in frame { data.appendFloat(component) }
+                data.appendInt32(frame.image)
+                data.appendFloat(frame.duration)
+                for component in frame.rect {
+                    if sheet.version == "TEXS0001" {
+                        data.appendInt32(Int32(component))
+                    } else {
+                        data.appendFloat(component)
+                    }
+                }
             }
         }
         return data
@@ -128,15 +150,42 @@ struct TEXTextureTests {
         #expect(texture.mipmaps.first?.isEncodedImage == true)
     }
 
-    @Test("A TEXB0004 video texture is refused by name, not decoded as garbage")
-    func revisionFourVideoIsRefused() {
+    @Test("A TEXB0004 video texture hands back its MP4")
+    func revisionFourVideo() throws {
         var builder = TEXBuilder()
         builder.containerVersion = "TEXB0004"
         builder.isVideo = 1
+        builder.videoLayout = true
+        let movie = Data("....ftypmp42 not really a movie".utf8)
+        builder.mipmaps = [(640, 444, movie, false)]
+        let texture = try TEXTexture(data: builder.build())
+        #expect(texture.isVideo)
+        #expect(texture.videoData == movie)
+    }
+
+    @Test("A video flagged in the header of a TEXB0003 container hands back its MP4")
+    func flaggedVideo() throws {
+        // Real content: a logo and an animated character, each an MP4 inside an ordinary
+        // TEXB0003 container with flag 0x20 set and uncompressedSize 0. Refused as a corrupt
+        // field, each layer drew as a white square.
+        var builder = TEXBuilder()
+        builder.flags = 0x22                 // clampUVs + isVideo
+        builder.videoLayout = true
+        let movie = Data("\u{0}\u{0}\u{0} ftypisom".utf8)
+        builder.mipmaps = [(640, 444, movie, false)]
+        let texture = try TEXTexture(data: builder.build())
+        #expect(texture.isVideo)
+        #expect(texture.flags.contains(.isVideo))
+        #expect(texture.videoData == movie)
+    }
+
+    @Test("An image texture has no video data")
+    func imageIsNotVideo() throws {
+        var builder = TEXBuilder()
         builder.mipmaps = [(4, 4, rgba(16), false)]
-        #expect(throws: WEError.unsupportedVersion("TEXB0004 video texture")) {
-            try TEXTexture(data: builder.build())
-        }
+        let texture = try TEXTexture(data: builder.build())
+        #expect(!texture.isVideo)
+        #expect(texture.videoData == nil)
     }
 
     // MARK: - Round trip
@@ -235,16 +284,88 @@ struct TEXTextureTests {
         #expect(texture.flags.contains(.clampUVs) == false)
     }
 
-    @Test("Parses a sprite sheet when present")
+    @Test("Reads a TEXS0002 frame table: seconds and a pixel rectangle per frame")
     func spriteSheet() throws {
+        // Shaped like a real 4-frame strip: 3072x896 frames stacked in a 4096x4096 atlas.
         var builder = TEXBuilder()
+        builder.flags = 4
         builder.mipmaps = [(4, 4, rgba(16), false)]
-        builder.spriteSheet = ("TEXS0002", [[0, 0, 2, 2], [2, 0, 2, 2]])
+        builder.spriteSheet = ("TEXS0002", nil, [
+            (0, 0.1, [0, 0, 3072, 0, 0, 896]),
+            (0, 0.1, [0, 896, 3072, 0, 0, 896]),
+        ])
 
         let texture = try TEXTexture(data: builder.build())
         let sheet = try #require(texture.spriteSheet)
         #expect(sheet.frames.count == 2)
-        #expect(sheet.frames[0].durationMilliseconds == 16)
+        #expect(sheet.frames[0].duration == 0.1)
+        #expect(sheet.frames[1].y == 896)
+        #expect(sheet.frames[1].width == 3072)
+        #expect(sheet.frames[1].height == 896)
+        #expect(abs(sheet.loopDuration - 0.2) < 0.0001)
+        #expect(texture.warnings.isEmpty)
+    }
+
+    @Test("Reads a TEXS0003 table, whose frame count comes before the GIF's size")
+    func spriteSheetRevisionThree() throws {
+        var builder = TEXBuilder()
+        builder.flags = 4
+        builder.mipmaps = [(4, 4, rgba(16), false)]
+        builder.spriteSheet = ("TEXS0003", (200, 205), [
+            (0, 0.042, [0, 0, 200, 0, 0, 205]),
+            (0, 0.042, [200, 0, 200, 0, 0, 205]),
+            (0, 0.042, [400, 0, 200, 0, 0, 205]),
+        ])
+
+        let texture = try TEXTexture(data: builder.build())
+        let sheet = try #require(texture.spriteSheet)
+        #expect(sheet.gifWidth == 200)
+        #expect(sheet.gifHeight == 205)
+        #expect(sheet.frames.map(\.x) == [0, 200, 400])
+    }
+
+    @Test("Reads TEXS0001's integer rectangles")
+    func spriteSheetRevisionOne() throws {
+        var builder = TEXBuilder()
+        builder.mipmaps = [(4, 4, rgba(16), false)]
+        builder.spriteSheet = ("TEXS0001", nil, [(0, 0.5, [2, 0, 2, 0, 0, 4])])
+        let sheet = try #require(try TEXTexture(data: builder.build()).spriteSheet)
+        #expect(sheet.frames[0].x == 2)
+        #expect(sheet.frames[0].height == 4)
+    }
+
+    @Test("Every page of a multi-image animation is read, and frames say which page")
+    func multipleImages() throws {
+        // Real content: 43 frames of 1080p in two 8192x8192 pages. Only the first page used
+        // to be read, which left the reader inside the second when it looked for the frames.
+        var builder = TEXBuilder()
+        builder.flags = 4
+        builder.mipmaps = [(4, 4, rgba(16), false), (2, 2, rgba(4), false)]
+        builder.extraImages = [[(4, 4, Data(rgba(16).map { $0 ^ 0xFF }), true)]]
+        builder.spriteSheet = ("TEXS0003", (4, 4), [
+            (0, 0.15, [0, 0, 4, 0, 0, 4]),
+            (1, 0.15, [0, 0, 4, 0, 0, 4]),
+        ])
+
+        let texture = try TEXTexture(data: builder.build())
+        #expect(texture.images.count == 2)
+        #expect(texture.images[0].count == 2)
+        #expect(texture.images[1][0].data == Data(rgba(16).map { $0 ^ 0xFF }))
+        #expect(texture.mipmaps == texture.images[0])
+        let sheet = try #require(texture.spriteSheet)
+        #expect(sheet.frames.map(\.imageIndex) == [0, 1])
+    }
+
+    @Test("A frame table that does not fill the file is ignored with a warning")
+    func inconsistentSpriteTable() throws {
+        var builder = TEXBuilder()
+        builder.mipmaps = [(4, 4, rgba(16), false)]
+        builder.spriteSheet = ("TEXS0002", nil, [(0, 0.1, [0, 0, 2, 0, 0, 2])])
+        var data = builder.build()
+        data.append(contentsOf: [0, 0, 0, 0])
+        let texture = try TEXTexture(data: data)
+        #expect(texture.spriteSheet == nil)
+        #expect(texture.warnings.contains { $0.contains("TEXS0002") })
     }
 
     @Test("A texture with no sprite sheet reports none")

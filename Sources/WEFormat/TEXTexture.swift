@@ -36,6 +36,8 @@ public struct TextureFlags: OptionSet, Sendable, Hashable {
     public static let clampUVs = TextureFlags(rawValue: 2)
     /// The texture is an animation; frame timing lives in the trailing `TEXS` table.
     public static let isGif = TextureFlags(rawValue: 4)
+    /// The payload is an MP4 video rather than pixels.
+    public static let isVideo = TextureFlags(rawValue: 32)
 }
 
 /// One decoded mip level. Payloads are always stored decompressed here — the LZ4 wrapper
@@ -71,61 +73,60 @@ public struct TextureMipmap: Sendable, Hashable {
 
 /// One frame of an animated texture, as stored in the trailing `TEXS` table.
 ///
-/// - Important: Only the first two fields are confirmed. See ``quadComponents``.
+/// Layout confirmed against all 18 animated textures in a real 59-scene library.
 public struct SpriteFrame: Sendable, Hashable {
 
-    /// Index of the image this frame samples from.
-    public let imageIndex: Int32
+    /// Which of the container's images the frame sits in. See ``TEXTexture/images``.
+    public let imageIndex: Int
 
-    /// Frame duration. Wallpaper Engine stores GIF timings in milliseconds.
-    public let durationMilliseconds: Float
+    /// How long the frame shows, in seconds — 0.1 for a 10fps GIF.
+    public let duration: Float
 
-    /// Every float stored after the duration, verbatim and in file order.
-    ///
-    /// - TODO: The exact meaning of these floats is **not confirmed**. `TEXS` frames are
-    ///   known to carry a source-rectangle quad, and the number of floats varies between
-    ///   table revisions — four in the simple case, six in the variant that also encodes
-    ///   a rotated source rect. Which slot holds width versus height in the six-float
-    ///   form could not be determined without a reference file, so this reader stores the
-    ///   floats untouched and ``width``/``height`` deliberately return `nil` there rather
-    ///   than guess. Confirm against a real animated `.tex` before the renderer relies on
-    ///   a specific slot.
-    public let quadComponents: [Float]
+    /// The frame's rectangle in the image, in pixels from the top-left.
+    public let x: Float
+    public let y: Float
+    public let width: Float
+    public let height: Float
 
-    public init(imageIndex: Int32, durationMilliseconds: Float, quadComponents: [Float]) {
+    /// Skew components of the rectangle: `(width, widthY)` is its x edge and
+    /// `(heightX, height)` its y edge, so a rotated frame can be stored. Zero in every real file.
+    public let widthY: Float
+    public let heightX: Float
+
+    public init(
+        imageIndex: Int, duration: Float,
+        x: Float, y: Float, width: Float, height: Float,
+        widthY: Float = 0, heightX: Float = 0
+    ) {
         self.imageIndex = imageIndex
-        self.durationMilliseconds = durationMilliseconds
-        self.quadComponents = quadComponents
+        self.duration = duration
+        self.x = x
+        self.y = y
+        self.width = width
+        self.height = height
+        self.widthY = widthY
+        self.heightX = heightX
     }
-
-    /// First quad component. Believed to be the source-rect origin X; see ``quadComponents``.
-    public var x: Float? { quadComponents.count >= 2 ? quadComponents[0] : nil }
-
-    /// Second quad component. Believed to be the source-rect origin Y; see ``quadComponents``.
-    public var y: Float? { quadComponents.count >= 2 ? quadComponents[1] : nil }
-
-    /// Source-rect width — only exposed for four-component frames, where the layout is
-    /// unambiguous. `nil` for the rotated six-component variant.
-    public var width: Float? { quadComponents.count == 4 ? quadComponents[2] : nil }
-
-    /// Source-rect height — see ``width``.
-    public var height: Float? { quadComponents.count == 4 ? quadComponents[3] : nil }
 }
 
-/// The optional animation frame table that follows the mipmaps in an animated `.tex`.
+/// The optional animation frame table that follows the images in an animated `.tex`.
 public struct SpriteSheet: Sendable, Hashable {
     /// Signature as it appeared in the file, e.g. `"TEXS0003"`.
     public let version: String
     public let frames: [SpriteFrame]
-    /// Floats per frame after the image index and duration — the stride this reader
-    /// inferred from the table's own size. See ``SpriteFrame/quadComponents``.
-    public let componentsPerFrame: Int
+    /// The source GIF's frame size, which only `TEXS0003` records.
+    public let gifWidth: Int?
+    public let gifHeight: Int?
 
-    public init(version: String, frames: [SpriteFrame], componentsPerFrame: Int) {
+    public init(version: String, frames: [SpriteFrame], gifWidth: Int? = nil, gifHeight: Int? = nil) {
         self.version = version
         self.frames = frames
-        self.componentsPerFrame = componentsPerFrame
+        self.gifWidth = gifWidth
+        self.gifHeight = gifHeight
     }
+
+    /// Time for one pass through every frame, in seconds.
+    public var loopDuration: Float { frames.reduce(0) { $0 + max(0, $1.duration) } }
 }
 
 /// Reader for the Wallpaper Engine `.tex` texture container.
@@ -143,9 +144,11 @@ public struct SpriteSheet: Sendable, Hashable {
 ///   int32 imageCount
 ///   [TEXB0003+]     int32 freeImageFormat
 ///   [TEXB0004 only] int32 isVideo           // payload is an MP4 when set and the format is -1
-/// int32  mipmapCount
-/// mip × mipmapCount { width, height, isCompressed, uncompressedSize, compressedSize, data }
-/// [optional] "TEXS000{1,2,3}"  // animated sprite frame table
+/// image × imageCount {
+///   int32  mipmapCount
+///   mip × mipmapCount { width, height, isCompressed, uncompressedSize, compressedSize, data }
+/// }
+/// [optional] "TEXS000{1,2,3}"  // animated sprite frame table, see parseSpriteSheet
 /// ```
 ///
 /// Anything the reader could not make sense of but survived — an unrecognised pixel
@@ -197,8 +200,18 @@ public struct TEXTexture: Sendable {
     /// FreeImage format id, present only in `TEXB0003`.
     public let freeImageFormat: Int32?
 
-    /// Mip levels in file order, payloads already decompressed.
+    /// Mip levels of the first image, in file order, payloads already decompressed.
     public let mipmaps: [TextureMipmap]
+
+    /// Every image's mip chain. More than one only for an animation spread over several pages;
+    /// ``SpriteFrame/imageIndex`` says which page a frame is on.
+    public let images: [[TextureMipmap]]
+
+    /// Whether the payload is an MP4 rather than pixels. See ``videoData``.
+    public let isVideo: Bool
+
+    /// The MP4 file, for a video texture.
+    public var videoData: Data? { isVideo ? mipmaps.first?.data : nil }
 
     /// Animation frames, when the file carries a `TEXS` table this reader could decode.
     public let spriteSheet: SpriteSheet?
@@ -249,31 +262,95 @@ public struct TEXTexture: Sendable {
             throw WEError.badMagic(expected: "TEXB0001…TEXB0004", found: containerVersion)
         }
 
-        // Every revision carries one undocumented int32 ahead of the mipmap count; TEXB0003
-        // adds a second field naming the FreeImage source format. Dispatching here keeps the
-        // difference in one place if a fourth revision appears.
+        // Every revision starts with the image count; TEXB0003 adds a field naming the
+        // FreeImage source format. Dispatching here keeps the difference in one place.
         //
         // Getting this wrong is silent and total: skipping the leading field on TEXB0001/0002
         // makes the parser read it *as* the mipmap count, so every older texture decodes to
         // garbage rather than failing loudly.
-        _ = try reader.readInt32()                        // image count, all revisions
+        let imageCountField = try reader.readInt32()
         var freeImageFormat: Int32?
         if containerVersion == "TEXB0003" || containerVersion == "TEXB0004" {
             freeImageFormat = try reader.readInt32()
         }
-        // TEXB0004 is TEXB0003 with one more field: whether the payload is an MP4 video rather
-        // than an image. Rejecting the revision outright threw away every texture written in
-        // it, and one of them was a whole wallpaper's background, which then drew as the
-        // white placeholder. An image payload reads exactly as TEXB0003 does; a video one
-        // cannot be decoded as a still, and is refused by name rather than as garbage.
-        if containerVersion == "TEXB0004" {
-            let isVideo = try reader.readInt32() == 1
-            if isVideo, (freeImageFormat ?? -1) < 0 {
-                throw WEError.unsupportedVersion("TEXB0004 video texture")
-            }
-        }
 
-        // --- Mipmaps ---------------------------------------------------------------
+        // A video texture holds an MP4 where the pixels would be. Newer files say so in a
+        // TEXB0004 field; older ones only through the header flag, inside an ordinary TEXB0003
+        // container whose size fields then describe the file rather than pixels. Refusing them
+        // drew each such layer as a white square.
+        var isVideo = flags.contains(.isVideo)
+        if containerVersion == "TEXB0004", try reader.readInt32() == 1, (freeImageFormat ?? -1) < 0 {
+            isVideo = true
+        }
+        let isEncodedImage = !isVideo && (freeImageFormat ?? -1) >= 0
+
+        // --- Images ----------------------------------------------------------------
+        // An animation can spread its frames over more than one image — 43 frames of 1080p
+        // fill two 8192x8192 pages — and each image carries its own mip chain. Reading only
+        // the first left the reader inside the second one's pixels when it went looking for
+        // the frame table. A count of 0 has only been seen from synthetic files; it still
+        // means one image follows.
+        let imageCount = try reader.validatedCount(
+            max(1, imageCountField), elementStride: 4, field: "imageCount"
+        )
+        var images: [[TextureMipmap]] = []
+        images.reserveCapacity(min(imageCount, 16))
+        for _ in 0 ..< imageCount {
+            images.append(
+                try Self.readMipmaps(
+                    &reader, isEncodedImage: isEncodedImage, isVideo: isVideo,
+                    warnings: &warnings
+                )
+            )
+        }
+        let mipmaps = images.first ?? []
+        // --- Optional sprite table -------------------------------------------------
+        let (spriteSheet, spriteWarnings) = Self.parseSpriteSheet(&reader)
+        warnings.append(contentsOf: spriteWarnings)
+
+        self.version = version
+        self.imageVersion = imageVersion
+        self.containerVersion = containerVersion
+        self.rawFormat = rawFormat
+        self.format = format
+        self.flags = flags
+        self.textureWidth = textureWidth
+        self.textureHeight = textureHeight
+        self.imageWidth = imageWidth
+        self.imageHeight = imageHeight
+        self.unknownHeaderValue = unknownHeaderValue
+        self.freeImageFormat = freeImageFormat
+        self.mipmaps = mipmaps
+        self.images = images
+        self.isVideo = isVideo
+        self.spriteSheet = spriteSheet
+        self.warnings = warnings
+    }
+
+    public init(contentsOf url: URL) throws {
+        try self.init(data: try Data(contentsOf: url, options: [.mappedIfSafe]))
+    }
+
+    // MARK: - Derived
+
+    /// Whether the file describes an animation, by flag or by carrying a frame table.
+    public var isAnimated: Bool {
+        flags.contains(.isGif) || (spriteSheet.map { !$0.frames.isEmpty } ?? false)
+    }
+
+    /// Mip level with the most pixels. Chosen by area rather than by index, because the
+    /// file's level ordering is not something this reader assumes.
+    public var largestMipmap: TextureMipmap? {
+        mipmaps.max { ($0.width * $0.height) < ($1.width * $1.height) }
+    }
+
+    /// One image's mip chain.
+    private static func readMipmaps(
+        _ reader: inout BinaryReader,
+        isEncodedImage: Bool,
+        isVideo: Bool,
+        warnings: inout [String]
+    ) throws -> [TextureMipmap] {
         // 5 int32 fields is the smallest a mip record can be, before any payload.
         let mipmapCountField = try reader.readInt32()
         let mipmapCount = try reader.validatedCount(
@@ -291,11 +368,25 @@ public struct TEXTexture: Sendable {
             let uncompressedSizeField = try reader.readInt32()
             let compressedSizeField = try reader.readInt32()
 
+            if isVideo {
+                // The whole MP4, stored verbatim. Real files leave `uncompressedSize` at 0 and
+                // give the file's length as `compressedSize`.
+                let length = compressedSizeField > 0 ? compressedSizeField : uncompressedSizeField
+                guard length > 0 else {
+                    throw WEError.corruptField("mipmap \(level) is a video of 0 bytes")
+                }
+                mipmaps.append(
+                    TextureMipmap(
+                        width: width, height: height, wasCompressed: false,
+                        isEncodedImage: false, data: try reader.readBytes(count: Int(length))
+                    )
+                )
+                continue
+            }
+
             // A FreeImage-encoded level carries a PNG or JPEG file rather than pixels, so
             // `uncompressedSize` does not apply and is stored as 0. `freeImageFormat` is -1
             // when the payload really is raw or LZ4-compressed pixels.
-            let isEncodedImage = (freeImageFormat ?? -1) >= 0
-
             guard isEncodedImage || uncompressedSizeField > 0 else {
                 throw WEError.corruptField("mipmap \(level) declares uncompressedSize \(uncompressedSizeField)")
             }
@@ -340,141 +431,88 @@ public struct TEXTexture: Sendable {
                 )
             )
         }
-
-        // --- Optional sprite table -------------------------------------------------
-        let (spriteSheet, spriteWarnings) = Self.parseSpriteSheet(&reader)
-        warnings.append(contentsOf: spriteWarnings)
-
-        self.version = version
-        self.imageVersion = imageVersion
-        self.containerVersion = containerVersion
-        self.rawFormat = rawFormat
-        self.format = format
-        self.flags = flags
-        self.textureWidth = textureWidth
-        self.textureHeight = textureHeight
-        self.imageWidth = imageWidth
-        self.imageHeight = imageHeight
-        self.unknownHeaderValue = unknownHeaderValue
-        self.freeImageFormat = freeImageFormat
-        self.mipmaps = mipmaps
-        self.spriteSheet = spriteSheet
-        self.warnings = warnings
-    }
-
-    public init(contentsOf url: URL) throws {
-        try self.init(data: try Data(contentsOf: url, options: [.mappedIfSafe]))
-    }
-
-    // MARK: - Derived
-
-    /// Whether the file describes an animation, by flag or by carrying a frame table.
-    public var isAnimated: Bool {
-        flags.contains(.isGif) || (spriteSheet.map { !$0.frames.isEmpty } ?? false)
-    }
-
-    /// Mip level with the most pixels. Chosen by area rather than by index, because the
-    /// file's level ordering is not something this reader assumes.
-    public var largestMipmap: TextureMipmap? {
-        mipmaps.max { ($0.width * $0.height) < ($1.width * $1.height) }
+        return mipmaps
     }
 
     // MARK: - Sprite table
 
     /// Decodes the trailing `TEXS` table, if there is one.
     ///
-    /// The table's per-frame stride is **inferred from the table's own size** rather than
-    /// hard-coded: `frameCount` frames must exactly fill the remaining bytes, and the
-    /// leftover per frame — after the `int32` image index and `float` duration — must be
-    /// a whole number of floats. Two candidate preambles are tried, since some revisions
-    /// are reported to precede `frameCount` with a pair of `int32` dimensions.
+    /// Layout, confirmed against all 18 animated textures in a real 59-scene library:
     ///
-    /// This is deliberately conservative: an inconsistent table yields a warning and no
-    /// frames rather than a plausible-looking misparse. See ``SpriteFrame/quadComponents``.
+    /// ```text
+    /// "TEXS000{1,2,3}"\0
+    /// int32  frameCount
+    /// [TEXS0003 only] int32 gifWidth, int32 gifHeight
+    /// frame × frameCount {
+    ///   int32 imageIndex
+    ///   float duration                                  // seconds
+    ///   x, y, width, widthY, heightX, height            // float; int32 in TEXS0001
+    /// }
+    /// ```
+    ///
+    /// The table has to fill the rest of the file exactly. Anything else yields a warning and no
+    /// frames rather than a plausible-looking misparse.
     private static func parseSpriteSheet(_ reader: inout BinaryReader) -> (SpriteSheet?, [String]) {
         guard reader.remaining > 0 else { return (nil, []) }
         guard let peeked = reader.peekMagic(length: 4), peeked == "TEXS" else {
-            return (nil, ["\(reader.remaining) trailing byte(s) after the last mipmap are not a TEXS table"])
+            return (nil, ["\(reader.remaining) trailing byte(s) after the last image are not a TEXS table"])
         }
-
-        var warnings: [String] = []
-        guard let spriteVersion = try? reader.readNullTerminatedMagic(expectedLength: 8) else {
+        guard let version = try? reader.readNullTerminatedMagic(expectedLength: 8) else {
             return (nil, ["TEXS signature is truncated; frames ignored"])
         }
-        guard supportedSpriteVersions.contains(spriteVersion) else {
-            return (nil, ["unsupported sprite table version \(spriteVersion); frames ignored"])
+        guard supportedSpriteVersions.contains(version) else {
+            return (nil, ["unsupported sprite table version \(version); frames ignored"])
         }
 
-        let tableStart = reader.offset
-        for preambleInt32s in [0, 2] {
-            var probe = reader
-            guard (try? probe.seek(to: tableStart)) != nil,
-                  (try? probe.skip(preambleInt32s * 4)) != nil,
-                  let rawFrameCount = try? probe.readInt32(),
-                  rawFrameCount >= 0
-            else { continue }
-
-            let frameCount = Int(rawFrameCount)
-            let body = probe.remaining
-
-            if frameCount == 0 {
-                guard body == 0 else { continue }
-                reader = probe
-                return (SpriteSheet(version: spriteVersion, frames: [], componentsPerFrame: 0), warnings)
+        let frameStride = 32
+        var probe = reader
+        guard let rawCount = try? probe.readInt32(), rawCount >= 0 else {
+            return (nil, ["\(version) frame count is unreadable; frames ignored"])
+        }
+        var gifWidth: Int?
+        var gifHeight: Int?
+        if version == "TEXS0003" {
+            guard let width = try? probe.readInt32(), let height = try? probe.readInt32() else {
+                return (nil, ["\(version) header is truncated; frames ignored"])
             }
+            gifWidth = Int(width)
+            gifHeight = Int(height)
+        }
+        let frameCount = Int(rawCount)
+        guard probe.remaining == frameCount * frameStride else {
+            return (nil, [
+                "\(version) declares \(frameCount) frame(s) but \(probe.remaining) byte(s) follow; frames ignored",
+            ])
+        }
 
-            // A frame is at least an int32 index plus a float duration.
-            guard frameCount <= body / 8, body % frameCount == 0 else { continue }
-            let stride = body / frameCount
-            guard stride > 8, (stride - 8) % 4 == 0 else { continue }
-            let componentsPerFrame = (stride - 8) / 4
-            guard (2 ... 8).contains(componentsPerFrame) else { continue }
+        let integerRects = version == "TEXS0001"
+        func component() throws -> Float {
+            integerRects ? Float(try probe.readInt32()) : try probe.readFloat()
+        }
 
-            var frames: [SpriteFrame] = []
-            frames.reserveCapacity(min(frameCount, 4096))
-            var complete = true
-
-            frameLoop: for _ in 0 ..< frameCount {
-                guard let imageIndex = try? probe.readInt32(),
-                      let duration = try? probe.readFloat()
-                else { complete = false; break }
-
-                var components: [Float] = []
-                components.reserveCapacity(componentsPerFrame)
-                for _ in 0 ..< componentsPerFrame {
-                    guard let value = try? probe.readFloat() else { complete = false; break frameLoop }
-                    components.append(value)
-                }
+        var frames: [SpriteFrame] = []
+        frames.reserveCapacity(min(frameCount, 4096))
+        do {
+            for _ in 0 ..< frameCount {
+                let imageIndex = Int(try probe.readInt32())
+                let duration = try probe.readFloat()
+                let x = try component(), y = try component(), width = try component()
+                let widthY = try component(), heightX = try component(), height = try component()
                 frames.append(
                     SpriteFrame(
-                        imageIndex: imageIndex,
-                        durationMilliseconds: duration,
-                        quadComponents: components
+                        imageIndex: imageIndex, duration: duration,
+                        x: x, y: y, width: width, height: height,
+                        widthY: widthY, heightX: heightX
                     )
                 )
             }
-
-            guard complete else { continue }
-            if preambleInt32s != 0 {
-                warnings.append(
-                    "\(spriteVersion) frame count followed a \(preambleInt32s * 4)-byte preamble"
-                )
-            }
-            reader = probe
-            return (
-                SpriteSheet(
-                    version: spriteVersion,
-                    frames: frames,
-                    componentsPerFrame: componentsPerFrame
-                ),
-                warnings
-            )
+        } catch {
+            return (nil, ["\(version) table is truncated; frames ignored"])
         }
 
-        warnings.append(
-            "could not determine \(spriteVersion) frame layout from \(reader.remaining) trailing byte(s); frames ignored"
-        )
-        return (nil, warnings)
+        reader = probe
+        return (SpriteSheet(version: version, frames: frames, gifWidth: gifWidth, gifHeight: gifHeight), [])
     }
 
     // MARK: - Helpers
