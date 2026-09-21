@@ -352,4 +352,13 @@ struct ShaderPreprocessorTests {
             try run("#include \"nope.h\"\nvoid main() {}")
         }
     }
+
+    @Test("A missing shader file reads as a sentence in reports")
+    func missingFileMessage() {
+        // Reports show `localizedDescription`. Without LocalizedError this read
+        // "The operation couldn't be completed. (…ShaderFileProviderError error 0.)" on every
+        // scene in a real library.
+        let error: any Error = ShaderFileProviderError.notFound("common.h")
+        #expect(error.localizedDescription == "shader include not found: common.h")
+    }
 }

@@ -625,10 +625,20 @@ public struct SceneBuilder {
                     )
                 }
             }
-            report.add(
-                .degraded, feature: "Shader",
-                detail: "\(shader): \(ShaderMessageText.oneLine(error.localizedDescription)) — drawn without it"
-            )
+            if case ShaderFileProviderError.notFound(let file) = error {
+                // By far the common case: every scene in a real library names
+                // `genericimage2`, which ships inside Wallpaper Engine rather than the wallpaper.
+                report.add(
+                    .degraded, feature: "Shader",
+                    detail: "\(shader): \(file) ships with Wallpaper Engine rather than the "
+                        + "wallpaper — drawn with a built-in approximation"
+                )
+            } else {
+                report.add(
+                    .degraded, feature: "Shader",
+                    detail: "\(shader): \(ShaderMessageText.oneLine(error.localizedDescription)) — drawn without it"
+                )
+            }
             return nil
         }
 

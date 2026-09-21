@@ -12,7 +12,7 @@ public protocol ShaderFileProvider: Sendable {
     func contents(of name: String) throws -> String
 }
 
-public enum ShaderFileProviderError: Error, Sendable, Equatable, CustomStringConvertible {
+public enum ShaderFileProviderError: Error, Sendable, Equatable, CustomStringConvertible, LocalizedError {
     case notFound(String)
     case unsafePath(String)
     case undecodableText(String)
@@ -24,6 +24,10 @@ public enum ShaderFileProviderError: Error, Sendable, Equatable, CustomStringCon
         case .undecodableText(let name): "shader include is not decodable text: \(name)"
         }
     }
+
+    /// Without this, `localizedDescription` — which is what reports show — bridges through
+    /// NSError and reads "The operation couldn't be completed. (…error 0.)" on every scene.
+    public var errorDescription: String? { description }
 }
 
 /// In-memory include provider, for tests and for archives already fully unpacked.
