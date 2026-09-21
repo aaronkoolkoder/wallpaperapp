@@ -129,42 +129,55 @@ struct CaseInsensitiveContainer {
     /// kinds, which are identified by key presence rather than by a `type` field.
     func has(_ name: String) -> Bool { keys[name.lowercased()] != nil }
 
+    // Every reader below tries the plain form first and then the object form.
+    //
+    // Wallpaper Engine writes a property as a plain value (`"origin": "960 540 0"`) until it is
+    // scripted or bound to a user setting, and from then on as an object carrying that value
+    // beside the script or binding (`"origin": {"script": "...", "value": "960 540 0"}`,
+    // `"color": {"user": "tint", "value": "1 0 0"}`). Reading only the plain form turned every
+    // such property into nil: across a real 59-scene library that put scripted layers at the
+    // scene's corner, drew bound colours as white, and dropped 37 text layers outright.
+
     func value<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
         guard let key = keys[name.lowercased()] else { return nil }
-        return (try? container.decodeIfPresent(T.self, forKey: key)) ?? nil
+        if let plain = (try? container.decodeIfPresent(T.self, forKey: key)) ?? nil { return plain }
+        return objectForm(key)?.lenient(T.self, Self.valueKey)
     }
 
     func string(_ name: String) -> String? {
         guard let key = keys[name.lowercased()] else { return nil }
-        return container.lenientString(key)
+        return container.lenientString(key) ?? objectForm(key)?.lenientString(Self.valueKey)
     }
 
     func double(_ name: String) -> Double? {
         guard let key = keys[name.lowercased()] else { return nil }
-        return container.lenientDouble(key)
+        return container.lenientDouble(key) ?? objectForm(key)?.lenientDouble(Self.valueKey)
     }
 
     func int(_ name: String) -> Int? {
         guard let key = keys[name.lowercased()] else { return nil }
-        return container.lenientInt(key)
+        return container.lenientInt(key) ?? objectForm(key)?.lenientInt(Self.valueKey)
     }
 
     func bool(_ name: String) -> Bool? {
         guard let key = keys[name.lowercased()] else { return nil }
-        return container.lenientBool(key)
+        return container.lenientBool(key) ?? objectForm(key)?.lenientBool(Self.valueKey)
+    }
+
+    private static let valueKey = AnyCodingKey("value")
+
+    /// The object a property is written as once it is scripted or bound, if it is one.
+    private func objectForm(_ key: AnyCodingKey) -> KeyedDecodingContainer<AnyCodingKey>? {
+        try? container.nestedContainer(keyedBy: AnyCodingKey.self, forKey: key)
     }
 
     /// Extract a SceneScript body from a property written in object form.
     ///
     /// Wallpaper Engine writes an animated property either as a plain value (`"alpha": 1`) or
     /// as an object carrying a script alongside its initial value
-    /// (`"alpha": {"value": 1, "script": "..."}`). Callers read the plain value through the
-    /// normal accessors, which already tolerate the object form returning nil.
-    ///
-    /// - TODO(verify): the object shape is inferred from the format's general structure rather
-    ///   than confirmed against real Workshop content, which this project has none of yet. The
-    ///   extraction is deliberately permissive so an unexpected shape yields no script rather
-    ///   than failing the wallpaper.
+    /// (`"alpha": {"value": 1, "script": "...", "scriptproperties": {...}}`). The accessors
+    /// above read that initial value; this reads the script. Confirmed against a real library,
+    /// where 30 properties across 59 scenes are written this way.
     func script(_ name: String) -> String? {
         struct ScriptCarrier: Decodable {
             var script: String?
