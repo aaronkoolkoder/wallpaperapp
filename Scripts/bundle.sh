@@ -47,9 +47,10 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>NSHighResolutionCapable</key><true/>
     <key>NSSupportsAutomaticGraphicsSwitching</key><true/>
     <key>NSHumanReadableCopyright</key><string>Copyright © 2026 Aaron Merchant</string>
-    <!-- Not LSUIElement: the app manages its own activation policy at runtime, showing a Dock
-         icon while a window is open and dropping to menu-bar-only when none is. Declaring
-         LSUIElement here would pin it to accessory and break that. -->
+    <!-- A background app: the menu bar item and the wallpaper, with no Dock icon and no menu
+         bar of its own. Declared here rather than only set at runtime so there is not a
+         flash of a Dock icon while the app launches — at login, every time. -->
+    <key>LSUIElement</key><true/>
 </dict>
 </plist>
 PLIST

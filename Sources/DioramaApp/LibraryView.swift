@@ -43,19 +43,21 @@ enum LibraryFilter: Hashable, Identifiable, CaseIterable {
     }
 }
 
-/// The main window: browse the library, inspect a wallpaper, set it.
+/// The app's one window: browse the library, inspect a wallpaper, set it — and every setting.
 ///
 /// Layout follows what a wallpaper library actually needs and what Wallpaper Engine itself
 /// established — a filter rail, a dense gallery, and a properties panel for the selection —
-/// rendered in Tahoe's language rather than as a port of its chrome.
+/// rendered in Tahoe's language rather than as a port of its chrome. Settings are a second
+/// group in the same rail, because Diorama otherwise lives in the menu bar and this is the only
+/// window it has.
 struct LibraryView: View {
     @Bindable var store: LibraryStore
     var systemModel: WallpaperSystemModel?
     var playlists: PlaylistStore?
+    @Bindable var navigation: WindowNavigation
     let onPlay: (WallpaperItem) -> Void
     var onPlayOnDisplay: ((WallpaperItem, CGDirectDisplayID) -> Void)?
 
-    @State private var filter: LibraryFilter = .all
     @State private var search = ""
     @State private var selection: WallpaperItem.ID?
     @State private var showsInspector = true
@@ -65,6 +67,14 @@ struct LibraryView: View {
     /// Remembers whether the walkthrough has been seen. Held here rather than in the app
     /// delegate because this window is the only place it can appear.
     private let tutorial = TutorialPresentation()
+
+    /// The library filter in effect, or the last one picked while a settings pane is showing.
+    private var filter: LibraryFilter {
+        if case .library(let filter) = navigation.destination { return filter }
+        return navigation.lastFilter
+    }
+
+    private var isShowingLibrary: Bool { navigation.destination.isLibrary }
 
     private var visibleItems: [WallpaperItem] {
         let base = store.items.filter { filter.matches($0) }
@@ -99,7 +109,7 @@ struct LibraryView: View {
         }
         .navigationTitle("Diorama")
         .navigationSubtitle(subtitle)
-        .inspector(isPresented: $showsInspector) {
+        .inspector(isPresented: inspectorPresented) {
             InspectorPanel(
                 item: selectedItem,
                 isPlaying: selectedItem.map { playingIDs.contains($0.id) } ?? false,
@@ -158,7 +168,17 @@ struct LibraryView: View {
         .task { if store.rootURL == nil { store.restore() } }
     }
 
+    /// The inspector describes a selected wallpaper, which a settings pane does not have. The
+    /// user's own choice is kept underneath, so coming back to the library restores it.
+    private var inspectorPresented: Binding<Bool> {
+        Binding(
+            get: { showsInspector && isShowingLibrary },
+            set: { showsInspector = $0 }
+        )
+    }
+
     private var subtitle: String {
+        if case .settings(let pane) = navigation.destination { return pane.title }
         guard store.rootURL != nil else { return "" }
         if store.isScanning { return "Indexing…" }
         let playable = store.items.filter(\.isPlayable).count
@@ -168,12 +188,12 @@ struct LibraryView: View {
     // MARK: - Sidebar
 
     private var sidebar: some View {
-        List(selection: $filter) {
+        List(selection: sidebarSelection) {
             Section("Library") {
                 ForEach(LibraryFilter.allCases) { entry in
                     Label(entry.title, systemImage: entry.symbol)
                         .badge(store.items.filter { entry.matches($0) }.count)
-                        .tag(entry)
+                        .tag(SidebarDestination.library(entry))
                 }
             }
 
@@ -188,11 +208,31 @@ struct LibraryView: View {
                     .buttonStyle(.plain)
                 }
             }
+
+            // Only with an engine behind the window: the settings panes drive live state, and
+            // the offscreen interface renderer draws this view without one.
+            if systemModel != nil {
+                Section("Settings") {
+                    ForEach(SettingsPane.allCases) { pane in
+                        Label(pane.title, systemImage: pane.symbol)
+                            .tag(SidebarDestination.settings(pane))
+                    }
+                }
+            }
         }
         .scrollContentBackground(.hidden)
         .background(Design.Surface.recessed)
         .navigationSplitViewColumnWidth(min: 212, ideal: 228, max: 300)
         .safeAreaInset(edge: .bottom) { sidebarFooter }
+    }
+
+    /// A `List` selection is optional; the destination is not. Clicking the empty space below
+    /// the rows would otherwise deselect everything and leave the detail column blank.
+    private var sidebarSelection: Binding<SidebarDestination?> {
+        Binding(
+            get: { navigation.destination },
+            set: { if let value = $0 { navigation.destination = value } }
+        )
     }
 
     private var sidebarFooter: some View {
@@ -233,6 +273,32 @@ struct LibraryView: View {
 
     @ViewBuilder
     private var detail: some View {
+        if case .settings(let pane) = navigation.destination {
+            settingsDetail(pane)
+        } else {
+            libraryDetail
+        }
+    }
+
+    @ViewBuilder
+    private func settingsDetail(_ pane: SettingsPane) -> some View {
+        if let systemModel {
+            Group {
+                switch pane {
+                case .general: GeneralSettings(model: systemModel)
+                case .performance: PerformanceSettings(model: systemModel)
+                case .displays: DisplaySettings(model: systemModel)
+                case .about: AboutView()
+                }
+            }
+            .scrollContentBackground(.hidden)
+            .background(Design.Surface.base)
+            .task { systemModel.refresh() }
+        }
+    }
+
+    @ViewBuilder
+    private var libraryDetail: some View {
         if store.rootURL == nil {
             EmptyLibraryView(
                 onChoose: chooseFolder,
@@ -301,22 +367,24 @@ struct LibraryView: View {
 
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                if let item = selectedItem { onPlay(item) }
-            } label: {
-                Label("Set as Wallpaper", systemImage: "play.fill")
+        if isShowingLibrary {
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    if let item = selectedItem { onPlay(item) }
+                } label: {
+                    Label("Set as Wallpaper", systemImage: "play.fill")
+                }
+                .disabled(selectedItem?.isPlayable != true)
+                .help("Set the selected wallpaper")
             }
-            .disabled(selectedItem?.isPlayable != true)
-            .help("Set the selected wallpaper")
-        }
-        ToolbarItem(placement: .primaryAction) {
-            Button {
-                showsInspector.toggle()
-            } label: {
-                Label("Inspector", systemImage: "sidebar.trailing")
+            ToolbarItem(placement: .primaryAction) {
+                Button {
+                    showsInspector.toggle()
+                } label: {
+                    Label("Inspector", systemImage: "sidebar.trailing")
+                }
+                .help("Show or hide the inspector")
             }
-            .help("Show or hide the inspector")
         }
         ToolbarItem(placement: .automatic) {
             Button {

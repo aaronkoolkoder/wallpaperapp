@@ -3,24 +3,8 @@ import ServiceManagement
 import SwiftUI
 import WallpaperKit
 
-struct SettingsView: View {
-    @Bindable var model: WallpaperSystemModel
-
-    var body: some View {
-        TabView {
-            GeneralSettings(model: model)
-                .tabItem { Label("General", systemImage: "gearshape") }
-            PerformanceSettings(model: model)
-                .tabItem { Label("Performance", systemImage: "bolt") }
-            DisplaySettings(model: model)
-                .tabItem { Label("Displays", systemImage: "display") }
-            AboutView()
-                .tabItem { Label("About", systemImage: "info.circle") }
-        }
-        .frame(width: 520, height: 430)
-        .task { model.refresh() }
-    }
-}
+// The settings panes. There is no settings window: each pane is a destination in the main
+// window's sidebar, listed by `SettingsPane`, so Diorama has exactly one window to find.
 
 // MARK: - General
 

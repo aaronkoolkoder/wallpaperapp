@@ -28,7 +28,7 @@ enum MainMenu {
 
         menu.addItem(
             withTitle: "About Diorama",
-            action: #selector(AppDelegate.showSettings(_:)),
+            action: #selector(AppDelegate.showAbout(_:)),
             keyEquivalent: ""
         ).target = target
 

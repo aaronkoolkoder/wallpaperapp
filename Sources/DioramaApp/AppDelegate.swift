@@ -17,12 +17,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     private var popoverMonitor: Any?
-    private var libraryWindow: NSWindow?
-    private var settingsWindow: NSWindow?
+    /// The app's only window: the library, with settings as a second sidebar group.
+    private var window: NSWindow?
+    private let navigation = WindowNavigation()
     private var model: WallpaperSystemModel?
     private let log = Logger(subsystem: "app.diorama", category: "app")
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // A background app: the menu bar item and the wallpaper, no Dock icon, ever. The bundle
+        // declares LSUIElement so there is not even a flash of one at launch; this covers a run
+        // straight from `swift run`, where there is no bundle to declare it.
+        NSApp.setActivationPolicy(.accessory)
+
         guard let device = MTLCreateSystemDefaultDevice() else {
             presentFatal("Diorama needs a Metal-capable GPU, and this Mac does not have one.")
             return
@@ -117,6 +123,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
+        // DIORAMA_SELFTEST=window drives the one-window shape inside the real app and exits
+        // with a status: activation policy, routing into settings, and whether ⌘W and ⌘, still
+        // reach the menu when there is no menu bar showing. Keystrokes are synthesised and
+        // handed to this process's own dispatch — never posted system-wide — so nothing typed
+        // here can land in another app.
+        if ProcessInfo.processInfo.environment["DIORAMA_SELFTEST"] == "window" {
+            Task { @MainActor in await self.runWindowSelfTest() }
+        }
+
         if let raw = ProcessInfo.processInfo.environment["DIORAMA_STRESS"],
            let cycles = Int(raw) {
             Task { @MainActor in await self.runStress(cycles: cycles) }
@@ -144,7 +159,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // launch still shows the thing the app is for, and a login launch is silent.
         if ProcessInfo.processInfo.environment["DIORAMA_PLAY"] == nil,
            ProcessInfo.processInfo.environment["DIORAMA_HOLD"] == nil,
-           ProcessInfo.processInfo.environment["DIORAMA_STRESS"] == nil {
+           ProcessInfo.processInfo.environment["DIORAMA_STRESS"] == nil,
+           ProcessInfo.processInfo.environment["DIORAMA_SELFTEST"] == nil {
             Task { @MainActor in
                 let restored = await self.restoreSession()
                 if !restored { self.showLibrary(nil) }
@@ -187,7 +203,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return restoredAny
     }
 
-    /// Clicking the Dock icon with no window open should bring the library back, not do nothing.
+    /// Opening Diorama again while it is running — from Finder, Launchpad or Spotlight — shows
+    /// the window.
+    ///
+    /// This is the way back in when the menu bar item cannot be reached. On a notched display a
+    /// crowded menu bar hides items behind the camera housing, and a background app whose only
+    /// door is a hidden icon would otherwise be impossible to open short of killing it.
     func applicationShouldHandleReopen(
         _ sender: NSApplication, hasVisibleWindows: Bool
     ) -> Bool {
@@ -198,23 +219,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Closing the last window must not quit: the wallpaper keeps running.
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
-    }
-
-    /// Show a Dock icon while a window is open, and drop back to menu-bar-only when none is.
-    ///
-    /// A permanent Dock icon is clutter for something that mostly sits in the background, but
-    /// `.accessory` alone means a missed menu bar item leaves no way into the app at all — and
-    /// an accessory app's windows cannot properly own the menu bar, so Cmd+Q and Cmd+W behave
-    /// oddly even once the menu exists.
-    func updateActivationPolicy() {
-        let hasWindow = NSApp.windows.contains {
-            $0.isVisible && $0.canBecomeMain && !($0 is NSPanel)
-        }
-        let wanted: NSApplication.ActivationPolicy = hasWindow ? .regular : .accessory
-        guard NSApp.activationPolicy() != wanted else { return }
-        log.info("activation policy -> \(wanted == .regular ? "regular (dock)" : "accessory")")
-        NSApp.setActivationPolicy(wanted)
-        if wanted == .regular { NSApp.activate(ignoringOtherApps: true) }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -372,9 +376,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func showLibrary(_ sender: Any?) {
-        if let existing = libraryWindow {
-            existing.makeKeyAndOrderFront(nil)
-            updateActivationPolicy()
+        navigation.showLibrary()
+        presentWindow()
+    }
+
+    /// Settings are a destination in the one window, not a window of their own.
+    @objc func showSettings(_ sender: Any?) {
+        if case .settings = navigation.destination {} else { navigation.show(.general) }
+        presentWindow()
+    }
+
+    @objc func showAbout(_ sender: Any?) {
+        navigation.show(.about)
+        presentWindow()
+    }
+
+    private func presentWindow() {
+        if let window {
+            window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
         }
@@ -383,6 +402,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store: library,
             systemModel: model,
             playlists: playlists,
+            navigation: navigation,
             onPlay: { [weak self] item in self?.play(item) },
             onPlayOnDisplay: { [weak self] item, displayID in
                 self?.model?.play(item, on: displayID)
@@ -400,15 +420,95 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.toolbarStyle = .unified
         window.isReleasedWhenClosed = false
         window.center()
+        // The library window's old name, so a frame the user already arranged is kept.
         window.setFrameAutosaveName("LibraryWindow")
-
-        libraryWindow = window
         window.delegate = self
+
+        self.window = window
         window.makeKeyAndOrderFront(nil)
-        // After ordering front, not before: the window is not yet visible when it is created,
-        // so counting visible windows first always concludes there are none.
-        updateActivationPolicy()
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func runWindowSelfTest() async {
+        var failures = 0
+        func check(_ passed: Bool, _ claim: String) {
+            print("selftest: \(passed ? "ok  " : "FAIL") \(claim)")
+            if !passed { failures += 1 }
+        }
+        func settle() async { try? await Task.sleep(for: .milliseconds(400)) }
+        // With DIORAMA_SELFTEST_PAUSE set, each destination is held long enough for a script to
+        // capture this one window by number — the way to look at the real layout, since the
+        // sidebar, forms and inspector are AppKit-backed and do not draw offscreen.
+        let pauses = ProcessInfo.processInfo.environment["DIORAMA_SELFTEST_PAUSE"] != nil
+        func hold(_ label: String) async {
+            guard pauses, let window else { return }
+            print("selftest: showing \(label) window=\(window.windowNumber)")
+            fflush(stdout)
+            try? await Task.sleep(for: .seconds(3))
+        }
+        func command(_ character: String, keyCode: UInt16) -> NSEvent? {
+            NSEvent.keyEvent(
+                with: .keyDown, location: .zero, modifierFlags: .command,
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: window?.windowNumber ?? 0, context: nil,
+                characters: character, charactersIgnoringModifiers: character,
+                isARepeat: false, keyCode: keyCode
+            )
+        }
+
+        check(NSApp.activationPolicy() == .accessory, "runs as a background app, no Dock icon")
+        let ours = NSApp.windows.filter { $0.canBecomeMain && $0.isVisible }
+        check(ours.isEmpty, "shows no window of its own at launch (found \(ours.count))")
+
+        showSettings(nil)
+        await settle()
+        check(window?.isVisible == true, "Settings opens the window")
+        check(navigation.destination == .settings(.general), "…on the General pane")
+        let windows = NSApp.windows.filter { $0.canBecomeMain && $0.isVisible }.count
+        check(windows == 1, "…and it is the only window (found \(windows))")
+        await hold("general")
+
+        navigation.show(.performance)
+        await settle()
+        await hold("performance")
+
+        showAbout(nil)
+        await settle()
+        check(navigation.destination == .settings(.about), "About goes to the About pane")
+
+        showLibrary(nil)
+        await settle()
+        check(navigation.destination.isLibrary, "Library goes back to the library")
+        await hold("library")
+
+        // The shortcuts, through the real dispatch. Whether the window can become key depends
+        // on the OS granting activation to a process launched from a terminal, so that is
+        // reported rather than assumed.
+        // ⌘W closes the *key* window, so it can only be tested while ours is key. Another app
+        // taking focus mid-test is the environment, not a defect, and is reported as such.
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        await settle()
+        if window?.isKeyWindow == true {
+            if let close = command("w", keyCode: 13) { NSApp.sendEvent(close) }
+            await settle()
+            check(window?.isVisible == false, "⌘W closes the window with no menu bar showing")
+        } else {
+            print("selftest: skip ⌘W — another app holds focus, so the window cannot be key")
+            window?.performClose(nil)
+            await settle()
+        }
+
+        if let settings = command(",", keyCode: 43) { NSApp.sendEvent(settings) }
+        await settle()
+        check(window?.isVisible == true && !navigation.destination.isLibrary,
+              "⌘, opens Settings with no window open")
+
+        window?.performClose(nil)
+        await settle()
+        print("selftest: \(failures == 0 ? "PASSED" : "FAILED (\(failures))")")
+        fflush(stdout)
+        exit(failures == 0 ? 0 : 1)
     }
 
     private func presentFatal(_ message: String) {
@@ -481,44 +581,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.popoverMonitor = nil
         }
     }
-
-    @objc func showSettings(_ sender: Any?) {
-        if let existing = settingsWindow {
-            existing.makeKeyAndOrderFront(nil)
-            updateActivationPolicy()
-            NSApp.activate(ignoringOtherApps: true)
-            return
-        }
-        guard let model else { return }
-
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 430),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Diorama Settings"
-        window.contentView = NSHostingView(rootView: SettingsView(model: model))
-        window.isReleasedWhenClosed = false
-        window.center()
-        window.setFrameAutosaveName("SettingsWindow")
-
-        settingsWindow = window
-        window.delegate = self
-        window.makeKeyAndOrderFront(nil)
-        // After ordering front, not before: the window is not yet visible when it is created,
-        // so counting visible windows first always concludes there are none.
-        updateActivationPolicy()
-        NSApp.activate(ignoringOtherApps: true)
-    }
 }
 
 extension AppDelegate: NSWindowDelegate {
-    /// Drop the Dock icon once the last window goes away, on the next turn of the run loop so
-    /// the window has actually been removed from `NSApp.windows` by the time we count them.
+    /// Hand focus back to whatever the user was doing before they opened the window.
+    ///
+    /// A background app with no window left open is still the active app until something else
+    /// is clicked, so keystrokes would go nowhere. Deactivating returns them to the previous
+    /// app, the way closing a menu bar utility's window is expected to behave.
     func windowWillClose(_ notification: Notification) {
-        DispatchQueue.main.async { [weak self] in
-            self?.updateActivationPolicy()
-        }
+        DispatchQueue.main.async { NSApp.deactivate() }
     }
 }
