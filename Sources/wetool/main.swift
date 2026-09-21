@@ -143,6 +143,32 @@ case "pkg":
         usage()
     }
 
+case "tex" where arguments.count >= 3 && arguments[1] == "channels":
+    // Mean of each byte position in the first mip, which is what settles how a 4-channel
+    // format's bytes are ordered on disk: a flow map's neutral 127 lands in the two
+    // positions that hold its direction, and alpha reads 255.
+    do {
+        let texture = try TEXTexture(data: Data(contentsOf: URL(fileURLWithPath: arguments[2])))
+        guard let base = texture.mipmaps.first, !base.isEncodedImage else { fail("no raw mip 0") }
+        let stride = 4
+        var sums = [Double](repeating: 0, count: stride)
+        var count = 0
+        base.data.withUnsafeBytes { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            var index = 0
+            while index + stride <= bytes.count {
+                for channel in 0 ..< stride { sums[channel] += Double(bytes[index + channel]) }
+                count += 1
+                index += stride
+            }
+        }
+        let format = texture.format.map(String.init(describing:)) ?? "unknown"
+        print("format \(format), \(base.width)x\(base.height)")
+        for (index, sum) in sums.enumerated() {
+            print(String(format: "  byte %d: mean %.1f", index, sum / Double(max(count, 1))))
+        }
+    } catch { fail("\(error)") }
+
 case "tex":
     guard arguments.count >= 3, arguments[1] == "info" else { usage() }
     do {

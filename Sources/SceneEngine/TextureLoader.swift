@@ -1,3 +1,4 @@
+import Accelerate
 import CoreGraphics
 import Foundation
 import ImageIO
@@ -37,15 +38,37 @@ public struct TextureLoader: Sendable {
         }
     }
 
+    /// Converts premultiplied BGRA8 pixels to straight alpha, in place.
+    static func unpremultiply(_ pixels: inout [UInt8], width: Int, height: Int, bytesPerRow: Int) {
+        pixels.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var buffer = vImage_Buffer(
+                data: base, height: vImagePixelCount(height), width: vImagePixelCount(width),
+                rowBytes: bytesPerRow
+            )
+            // The RGBA variant, which is the same operation for BGRA: it divides the first
+            // three channels by the fourth, whatever order those three are in.
+            _ = vImageUnpremultiplyData_RGBA8888(&buffer, &buffer, vImage_Flags(kvImageNoFlags))
+        }
+    }
+
     /// Map a Wallpaper Engine pixel format onto Metal's.
     ///
-    /// Note the ARGB8888 case: the name is the *channel order Wallpaper Engine uses in its own
-    /// naming*, but the bytes on disk are BGRA, which is what `.bgra8Unorm` expects. Treating the
-    /// name literally and picking `.rgba8Unorm` swaps red and blue on every uncompressed texture
-    /// — a subtle, entirely plausible-looking failure.
+    /// Format 0 — what this code base calls `argb8888` — holds its bytes in **R, G, B, A**
+    /// order. This used to say BGRA, as an assertion with nothing behind it, and every raw
+    /// texture had its red and blue swapped: Sonic's Green Hill Zone rendered under a red sky
+    /// over orange water. Three independent checks settle it:
+    ///
+    /// - Colour: that sky's texture averages 42 in byte 0 and 175 in byte 2, and the sky is
+    ///   blue. A skin-tone texture averages 215 in byte 0 and 149 in byte 2.
+    /// - Flow maps: shake's direction masks carry their direction in bytes 0 and 1 and leave
+    ///   byte 2 exactly zero — a 2D flow map's R and G, with B unused. Read as BGRA, the x
+    ///   direction came from the empty channel, (0 - 0.498) * 2 = -1, and every shaken layer
+    ///   was dragged left at full strength, smearing its edge.
+    /// - repkg, which reads this format as RGBA8888 and loads it straight into RGBA pixels.
     static func pixelFormat(for format: TextureFormat) -> MTLPixelFormat? {
         switch format {
-        case .argb8888: .bgra8Unorm
+        case .argb8888: .rgba8Unorm
         case .dxt1: .bc1_rgba
         case .dxt3: .bc2_rgba
         case .dxt5: .bc3_rgba
@@ -115,6 +138,14 @@ public struct TextureLoader: Sendable {
             return true
         }
         guard drawn else { throw LoadError.undecodableImage(label ?? "texture") }
+
+        // Back to straight alpha. CoreGraphics only draws 8-bit RGBA premultiplied, but a PNG
+        // holds straight alpha, and so does every other texture this renderer uploads: the
+        // built-in shader premultiplies after sampling, and a wallpaper's own shaders blend as
+        // straight alpha. Left premultiplied, every soft edge was multiplied by its alpha twice
+        // — a half-transparent pixel came out at a quarter of its colour, a dark fringe
+        // around anything anti-aliased.
+        Self.unpremultiply(&pixels, width: width, height: height, bytesPerRow: bytesPerRow)
 
         let descriptor = MTLTextureDescriptor.texture2DDescriptor(
             pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
