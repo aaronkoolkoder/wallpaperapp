@@ -288,6 +288,9 @@ public struct SceneObject: Sendable, Hashable, Codable {
     /// The settings each script declares, as this wallpaper saved them, keyed like ``scripts``.
     /// A clock's 24-hour switch and separator live here.
     public var scriptProperties: [String: [String: DynamicValue]]
+    /// Timeline animations keyed by the property they drive: `alpha`, `origin`, `angles`,
+    /// `scale`, `color`.
+    public var animations: [String: PropertyAnimation]
 
     public init(
         id: Int? = nil,
@@ -309,6 +312,7 @@ public struct SceneObject: Sendable, Hashable, Codable {
         effects: [SceneEffect] = [],
         scripts: [String: String] = [:],
         scriptProperties: [String: [String: DynamicValue]] = [:],
+        animations: [String: PropertyAnimation] = [:],
         font: String? = nil,
         fontSize: Double? = nil,
         horizontalAlign: String? = nil,
@@ -335,6 +339,7 @@ public struct SceneObject: Sendable, Hashable, Codable {
         self.effects = effects
         self.scripts = scripts
         self.scriptProperties = scriptProperties
+        self.animations = animations
         self.font = font
         self.fontSize = fontSize
         self.horizontalAlign = horizontalAlign
@@ -369,6 +374,14 @@ public struct SceneObject: Sendable, Hashable, Codable {
         }
         self.scripts = scripts
         self.scriptProperties = scriptProperties
+
+        var animations: [String: PropertyAnimation] = [:]
+        for property in ["alpha", "origin", "angles", "scale", "color"] {
+            if let animation = object.animation(property), !animation.channels.isEmpty {
+                animations[property] = animation
+            }
+        }
+        self.animations = animations
 
         font = object.string("font")
         // `pointsize` is what every text object in a real 59-scene library uses. `size` is the
@@ -587,5 +600,112 @@ public struct SceneDocument: Sendable, Hashable, Codable {
     /// Objects of a given kind, in declaration order.
     public func objects(ofKind kind: SceneObjectKind) -> [SceneObject] {
         objects.filter { $0.kind == kind }
+    }
+}
+
+/// A property animated on a timeline in the editor, rather than by script.
+///
+/// Written inside the property's object form, beside its value:
+///
+/// ```json
+/// "alpha": {"value": 1, "animation": {
+///     "c0": [{"frame": 0, "value": 1}, {"frame": 90, "value": 1}, {"frame": 120, "value": 0}],
+///     "options": {"fps": 30, "length": 120, "mode": "single"}}}
+/// ```
+///
+/// One channel per component (`c0`…`c2`). Keyframes also carry Bézier handles, which are read
+/// past: the curve between keys is drawn straight.
+public struct PropertyAnimation: Sendable, Hashable, Decodable {
+    public enum Mode: String, Sendable, Hashable {
+        /// Wrap around to the start.
+        case loop
+        /// Play once and hold the last value.
+        case single
+        /// Play forwards, then backwards.
+        case mirror
+    }
+
+    public struct Keyframe: Sendable, Hashable {
+        public var frame: Double
+        public var value: Double
+        public init(frame: Double, value: Double) {
+            self.frame = frame
+            self.value = value
+        }
+    }
+
+    public var channels: [[Keyframe]]
+    public var framesPerSecond: Double
+    /// Timeline length, in frames.
+    public var length: Double
+    public var mode: Mode
+
+    public init(channels: [[Keyframe]], framesPerSecond: Double, length: Double, mode: Mode) {
+        self.channels = channels
+        self.framesPerSecond = framesPerSecond
+        self.length = length
+        self.mode = mode
+    }
+
+    public init(from decoder: Decoder) throws {
+        struct RawKeyframe: Decodable {
+            var frame: Double?
+            var value: Double?
+        }
+        struct Options: Decodable {
+            var fps: Double?
+            var length: Double?
+            var mode: String?
+        }
+        let container = try decoder.container(keyedBy: AnyCodingKey.self)
+        var channels: [[Keyframe]] = []
+        for index in 0 ..< 4 {
+            guard let raw = try? container.decodeIfPresent(
+                [Failable<RawKeyframe>].self, forKey: AnyCodingKey("c\(index)")
+            ) else { break }
+            let keys = raw.compactMap(\.value).compactMap { key -> Keyframe? in
+                guard let frame = key.frame, let value = key.value,
+                      frame.isFinite, value.isFinite else { return nil }
+                return Keyframe(frame: frame, value: value)
+            }
+            channels.append(keys.sorted { $0.frame < $1.frame })
+        }
+        let options = try? container.decodeIfPresent(Options.self, forKey: AnyCodingKey("options"))
+        self.channels = channels
+        framesPerSecond = options?.fps ?? 30
+        length = options?.length ?? (channels.flatMap { $0 }.map(\.frame).max() ?? 0)
+        mode = options?.mode.flatMap { Mode(rawValue: $0.lowercased()) } ?? .loop
+    }
+
+    /// Each channel's value `seconds` into the animation.
+    public func values(at seconds: Double) -> [Double] {
+        var frame = seconds * framesPerSecond
+        if length > 0, frame.isFinite {
+            switch mode {
+            case .loop:
+                frame = frame.truncatingRemainder(dividingBy: length)
+                if frame < 0 { frame += length }
+            case .single:
+                frame = min(max(frame, 0), length)
+            case .mirror:
+                let period = length * 2
+                var position = frame.truncatingRemainder(dividingBy: period)
+                if position < 0 { position += period }
+                frame = position > length ? period - position : position
+            }
+        }
+        return channels.map { Self.interpolate($0, at: frame) }
+    }
+
+    private static func interpolate(_ keys: [Keyframe], at frame: Double) -> Double {
+        guard let first = keys.first, let last = keys.last else { return 0 }
+        if frame <= first.frame { return first.value }
+        if frame >= last.frame { return last.value }
+        for (from, to) in zip(keys, keys.dropFirst()) where frame <= to.frame {
+            let span = to.frame - from.frame
+            guard span > 0 else { return to.value }
+            return from.value + (to.value - from.value) * (frame - from.frame) / span
+        }
+        return last.value
     }
 }

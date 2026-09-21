@@ -112,6 +112,8 @@ public struct RenderableScene: @unchecked Sendable {
     public var scriptBindings: [ScriptBinding] = []
     /// Text layers whose string comes from a script — clocks and dates.
     public var textBindings: [TextBinding] = []
+    /// Layer properties on an editor timeline.
+    public var animationBindings: [AnimationBinding] = []
     /// Owns the JavaScript context. Nil when no object in the scene is scripted, which is the
     /// overwhelming majority — no interpreter is created for a scene that does not need one.
     public var scriptRuntime: ScriptRuntime?
@@ -195,6 +197,44 @@ public struct ScriptBinding: Sendable, Hashable {
         self.layerIndex = layerIndex
         self.property = property
         self.handle = handle
+    }
+}
+
+/// A layer property driven by a timeline animation.
+///
+/// Measured against real content: positions and angles animate as offsets from the value the
+/// layer was saved with — a ship's keyframes run from +250 to -2645 around its origin — while
+/// alpha, scale and colour animate as multipliers, which is how an intro logo saved at alpha 1
+/// with keys of 1, 1 and 0 fades out.
+public struct AnimationBinding: Sendable {
+    public let layerIndex: Int
+    public let property: String
+    public let animation: PropertyAnimation
+    /// The layer's own value for `property`, which the animation is relative to.
+    public let base: SIMD4<Float>
+
+    /// The property's value `seconds` in.
+    public func apply(at seconds: Double, to layer: inout RenderableLayer) {
+        let values = animation.values(at: seconds).map(Float.init)
+        func channel(_ index: Int, _ fallback: Float) -> Float {
+            index < values.count && values[index].isFinite ? values[index] : fallback
+        }
+        switch property {
+        case "origin":
+            layer.origin = SIMD3(base.x + channel(0, 0), base.y + channel(1, 0), base.z + channel(2, 0))
+        case "angles":
+            layer.angles = SIMD3(base.x + channel(0, 0), base.y + channel(1, 0), base.z + channel(2, 0))
+        case "scale":
+            layer.scale = SIMD3(base.x * channel(0, 1), base.y * channel(1, 1), base.z * channel(2, 1))
+        case "alpha":
+            layer.tint.w = base.w * channel(0, 1)
+        case "color":
+            layer.tint = SIMD4(
+                base.x * channel(0, 1), base.y * channel(1, 1), base.z * channel(2, 1), layer.tint.w
+            )
+        default:
+            break
+        }
     }
 }
 
@@ -329,7 +369,22 @@ public struct SceneBuilder {
         var systems: [ParticleSystem] = []
         var bindings: [ScriptBinding] = []
         var textBindings: [TextBinding] = []
+        var animationBindings: [AnimationBinding] = []
         var scriptRuntime: ScriptRuntime?
+
+        func bindAnimations(of object: SceneObject, to layer: RenderableLayer, at index: Int) {
+            for (property, animation) in object.animations.sorted(by: { $0.key < $1.key }) {
+                let base: SIMD4<Float> = switch property {
+                case "origin": SIMD4(layer.origin, 0)
+                case "angles": SIMD4(layer.angles, 0)
+                case "scale": SIMD4(layer.scale, 0)
+                default: layer.tint
+                }
+                animationBindings.append(
+                    AnimationBinding(layerIndex: index, property: property, animation: animation, base: base)
+                )
+            }
+        }
 
         let ortho = document.general?.orthogonalProjection
         let orthoSize = SIMD2<Float>(
@@ -348,6 +403,7 @@ public struct SceneBuilder {
                     )
                     let layerIndex = layers.count
                     layers.append(layer)
+                    bindAnimations(of: object, to: layer, at: layerIndex)
 
                     for (property, body) in object.scripts.sorted(by: { $0.key < $1.key }) {
                         // Create the interpreter lazily: a scene with no scripts never pays for
@@ -383,6 +439,7 @@ public struct SceneBuilder {
                     object, layerIndex: layers.count, assets: assets, device: device,
                     runtime: &scriptRuntime, report: &report
                 ) {
+                    bindAnimations(of: object, to: built.layer, at: layers.count)
                     layers.append(built.layer)
                     if let binding = built.binding { textBindings.append(binding) }
                 }
@@ -429,6 +486,7 @@ public struct SceneBuilder {
             sceneEffects: sceneEffects,
             scriptBindings: bindings,
             textBindings: textBindings,
+            animationBindings: animationBindings,
             scriptRuntime: scriptRuntime,
             report: report
         )

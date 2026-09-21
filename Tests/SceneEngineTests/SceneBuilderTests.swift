@@ -152,6 +152,35 @@ struct SceneBuilderTests {
         #expect(abs(layer.angles.z - 1.5708) < 0.0001)
     }
 
+    @Test("Timelines move positions by offsets and fade alpha by multiplying")
+    func animationSemantics() throws {
+        var layer = testLayer()
+        layer.origin = SIMD3(2741, 1403, 0)
+        let flight = AnimationBinding(
+            layerIndex: 0, property: "origin",
+            animation: PropertyAnimation(
+                channels: [[.init(frame: 0, value: 250)], [.init(frame: 0, value: -210)]],
+                framesPerSecond: 2, length: 60, mode: .loop
+            ),
+            base: SIMD4(layer.origin, 0)
+        )
+        flight.apply(at: 0, to: &layer)
+        #expect(layer.origin == SIMD3(2991, 1193, 0))
+
+        let fade = AnimationBinding(
+            layerIndex: 0, property: "alpha",
+            animation: PropertyAnimation(
+                channels: [[.init(frame: 0, value: 1), .init(frame: 120, value: 0)]],
+                framesPerSecond: 30, length: 120, mode: .single
+            ),
+            base: SIMD4(1, 1, 1, 0.8)
+        )
+        fade.apply(at: 10, to: &layer)
+        #expect(layer.tint.w == 0)
+        fade.apply(at: 2, to: &layer)
+        #expect(abs(layer.tint.w - 0.8 * 0.5) < 0.0001)
+    }
+
     private func testLayer() -> RenderableLayer {
         RenderableLayer(
             name: "test", origin: .zero, angles: .zero, scale: SIMD3(1, 1, 1),

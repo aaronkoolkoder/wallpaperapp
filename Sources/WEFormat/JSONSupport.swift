@@ -204,6 +204,12 @@ struct CaseInsensitiveContainer {
         return saved.compactMapValues(\.value)
     }
 
+    /// A timeline animation written inside a property's object form, if there is one.
+    func animation(_ name: String) -> PropertyAnimation? {
+        guard let key = keys[name.lowercased()] else { return nil }
+        return objectForm(key)?.lenient(PropertyAnimation.self, AnyCodingKey("animation"))
+    }
+
     func stringArray(_ name: String) -> [String]? {
         guard let key = keys[name.lowercased()] else { return nil }
         return container.lenientStringArray(key)

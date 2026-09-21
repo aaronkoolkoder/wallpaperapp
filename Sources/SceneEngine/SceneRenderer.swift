@@ -155,6 +155,7 @@ public final class SceneRenderer {
         camera.setPointer(normalized: pointer)
         camera.update(deltaTime: clock.delta)
         let cameraOffset = camera.offset
+        runAnimations(scene: scene)
         runScripts(scene: scene)
         runTextScripts(scene: scene)
         advanceSprites()
@@ -413,6 +414,15 @@ public final class SceneRenderer {
                 elapsed: Double(clock.elapsed)
             ) else { continue }
             workingLayers[binding.layerIndex].applyScriptValue(result, to: binding.property)
+        }
+    }
+
+    /// Move every timeline-animated property to where it is now. Before scripts, so a script
+    /// reading a property sees the animated value.
+    private func runAnimations(scene: RenderableScene) {
+        let now = Double(clock.elapsed)
+        for binding in scene.animationBindings where workingLayers.indices.contains(binding.layerIndex) {
+            binding.apply(at: now, to: &workingLayers[binding.layerIndex])
         }
     }
 
@@ -725,6 +735,7 @@ extension SceneRenderer {
         } else if workingLayers.count != scene.layers.count {
             workingLayers = scene.layers
         }
+        runAnimations(scene: scene)
         runTextScripts(scene: scene)
         advanceSprites()
 

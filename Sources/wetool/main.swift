@@ -49,7 +49,7 @@ func usage() -> Never {
       wetool library [domain]            Report where the imported library folder
                                          is and whether it can still be reached
       wetool scene info <wallpaper-dir>  Describe a scene's layers
-      wetool scene render <wallpaper-dir> <out.png> [WxH] [px,py]
+      wetool scene render <wallpaper-dir> <out.png> [WxH] [px,py] [--at seconds]
                                          Render one frame offscreen; px,py is a
                                          normalised pointer in [-1,1] for parallax
     """)
@@ -499,10 +499,17 @@ case "scene":
                     pointer = SIMD2(x, y)
                 }
             }
+            // `--at <seconds>` renders the frame that many seconds in, for timelines and scripts
+            // that change over time. Three by default: long enough for particles to fill in.
+            var seconds: Float = 3
+            if let flag = arguments.firstIndex(of: "--at"), flag + 1 < arguments.count,
+               let value = Float(arguments[flag + 1]), value >= 0 {
+                seconds = value
+            }
             let renderer = try SceneRenderer(renderDevice: renderDevice)
             renderer.setScene(scene)
             guard let image = renderer.renderOffscreen(
-                width: width, height: height, pointer: pointer, warmUpSeconds: 3
+                width: width, height: height, pointer: pointer, warmUpSeconds: seconds
             ) else {
                 fail("offscreen render produced no image")
             }
