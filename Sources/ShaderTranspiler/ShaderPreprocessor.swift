@@ -209,18 +209,46 @@ public struct ShaderPreprocessor: Sendable {
             }
         }
 
+        // And the combos a shader declares in `// [COMBO]` comments. Wallpaper Engine sets a
+        // pass's combos for both stages, but a pair often declares one in only one of them:
+        // godrays' downsample declares NOISE in its fragment shader while its vertex shader
+        // writes the noise coordinates under the same `#if`. Resolved one stage at a time, the
+        // vertex stage came out without them and the pipeline would not link — "fragment input
+        // user(locn1) not written by vertex shader", in five wallpapers of a real library.
+        var pairCombos: [ComboDeclaration] = []
+        for source in [vertex, fragment] {
+            for combo in try comboDeclarations(of: source, provider: provider)
+            where !pairCombos.contains(where: { $0.name == combo.name }) {
+                pairCombos.append(combo)
+            }
+        }
+
         return (
             try preprocess(
                 vertex, provider: provider,
                 comboOverrides: comboOverrides, varyingLocations: locations,
-                samplerCombos: samplerCombos
+                samplerCombos: samplerCombos, pairCombos: pairCombos
             ),
             try preprocess(
                 fragment, provider: provider,
                 comboOverrides: comboOverrides, varyingLocations: locations,
-                samplerCombos: samplerCombos
+                samplerCombos: samplerCombos, pairCombos: pairCombos
             )
         )
+    }
+
+    private func comboDeclarations(
+        of source: ShaderSource, provider: ShaderFileProvider
+    ) throws -> [ComboDeclaration] {
+        let resolved: ResolvedShaderSource
+        do {
+            resolved = try includeResolver.resolve(
+                source, provider: provider, prelude: [Self.implicitHeader]
+            )
+        } catch let error as IncludeError {
+            throw ShaderPreprocessorError.includeFailed(error)
+        }
+        return ComboParser.parse(resolved.text, shaderName: source.name).combos
     }
 
     /// The combo each sampler switches on, and its value: 1 when a texture is bound to that
@@ -266,7 +294,8 @@ public struct ShaderPreprocessor: Sendable {
         comboOverrides: [String: Int] = [:],
         varyingLocations: [String: Int]? = nil,
         boundTextures: Set<Int> = [],
-        samplerCombos: [String: Int]? = nil
+        samplerCombos: [String: Int]? = nil,
+        pairCombos: [ComboDeclaration] = []
     ) throws -> PreprocessedShader {
         // Wallpaper Engine's common header is implicit, not included. Most shipped shaders call
         // `mul`, `frac`, `texSample2D` and `CAST3` without ever naming a header — only 16 of the
@@ -290,8 +319,12 @@ public struct ShaderPreprocessor: Sendable {
         let uniformResult = UniformAnnotationParser.parse(resolved.text, shaderName: source.name)
         diagnostics.append(contentsOf: uniformResult.diagnostics)
 
+        var declaredCombos = comboResult.combos
+        for combo in pairCombos where !declaredCombos.contains(where: { $0.name == combo.name }) {
+            declaredCombos.append(combo)
+        }
         let comboValues = resolveComboValues(
-            declared: comboResult.combos,
+            declared: declaredCombos,
             overrides: comboOverrides,
             shaderName: source.name,
             diagnostics: &diagnostics
@@ -301,7 +334,7 @@ public struct ShaderPreprocessor: Sendable {
         // a redefinition with a different value is a hard error in the preprocessor.
         let selfDefined = selfDefinedMacros(in: resolved.text)
         var injectable: [(name: String, value: Int)] = []
-        for combo in comboResult.combos {
+        for combo in declaredCombos {
             guard let value = comboValues[combo.name] else { continue }
             if selfDefined.contains(combo.name) {
                 diagnostics.append(ShaderDiagnostic(
@@ -320,7 +353,7 @@ public struct ShaderPreprocessor: Sendable {
         // 1` was always false, and a painted mask was compiled out of the very shader it was
         // bound to. A pair passes in what it decided for both stages; a lone stage decides
         // from its own samplers.
-        let declared = Set(comboResult.combos.map(\.name))
+        let declared = Set(declaredCombos.map(\.name))
         let samplerValues = samplerCombos ?? Self.samplerComboValues(
             in: uniformResult, overrides: comboOverrides, boundTextures: boundTextures
         )

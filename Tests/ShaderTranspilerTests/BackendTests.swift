@@ -299,6 +299,55 @@ struct PipelineTests {
         #expect(try translate(bloom: 0) != (try translate(bloom: 1)))
     }
 
+    @Test("A combo declared in one stage of a pair is set in both")
+    func pairedCombos() throws {
+        // Real content: godrays' downsample declares NOISE only in its fragment shader, and its
+        // vertex shader writes the noise coordinates under the same `#if`. Each stage used to
+        // resolve its own declarations, so the vertex stage compiled without NOISE and the
+        // pipeline would not link.
+        let (vertex, fragment) = try preprocessor.preprocessPair(
+            vertex: ShaderSource(name: "d.vert", stage: .vertex, text: """
+            attribute vec3 a_Position;
+            attribute vec2 a_TexCoord;
+            varying vec4 v_TexCoord;
+            #if NOISE == 1
+            varying vec4 v_NoiseTexCoord;
+            #endif
+            uniform mat4 g_ModelViewProjection;
+            void main() {
+                gl_Position = g_ModelViewProjection * vec4(a_Position, 1.0);
+                v_TexCoord = a_TexCoord.xyxy;
+            #if NOISE == 1
+                v_NoiseTexCoord = a_TexCoord.xyxy * 2.0;
+            #endif
+            }
+            """),
+            fragment: ShaderSource(name: "d.frag", stage: .fragment, text: """
+            // [COMBO] {"material":"ui_editor_properties_noise","combo":"NOISE","type":"options","default":1}
+            varying vec4 v_TexCoord;
+            #if NOISE == 1
+            varying vec4 v_NoiseTexCoord;
+            #endif
+            uniform sampler2D g_Texture0;
+            void main() {
+                gl_FragColor = texture2D(g_Texture0, v_TexCoord.xy);
+            #if NOISE == 1
+                gl_FragColor.rgb += texture2D(g_Texture0, v_NoiseTexCoord.xy).rgb;
+            #endif
+            }
+            """),
+            provider: InMemoryShaderFileProvider([:])
+        )
+
+        let vertexOut = try backend.compile(glsl: vertex.glsl, stage: .vertex).reflection
+        let fragmentIn = try backend.compile(glsl: fragment.glsl, stage: .fragment).reflection
+        #expect(fragmentIn.inputs.count == 2)
+        #expect(!vertexOut.entryPoint.isEmpty)
+        for input in fragmentIn.inputs {
+            #expect(vertex.varyings.contains(input.name), "\(input.name) is read but never written")
+        }
+    }
+
     @Test("A paired vertex and fragment shader agree on their varyings")
     func pairedStagesAgree() throws {
         let (vertex, fragment) = try preprocessor.preprocessPair(
