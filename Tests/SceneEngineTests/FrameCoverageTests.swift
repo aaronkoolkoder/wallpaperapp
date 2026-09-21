@@ -55,6 +55,26 @@ struct FrameCoverageTests {
         #expect(abs(pixelsPerUnitX - pixelsPerUnitY) < 1e-3, "the scene is stretched")
     }
 
+    @Test("A processed layer is composited back over exactly the frame",
+          arguments: [SIMD2<Float>(1512, 982), SIMD2<Float>(3440, 1440), SIMD2<Float>(1920, 1080)])
+    func compositeQuadCoversTheFrame(drawable: SIMD2<Float>) {
+        // The quad a layer's effect output is drawn back with. Built from the projection's
+        // scale alone it assumed a projection centred on zero, but the scene's places its
+        // corner at the origin — and the quad landed a half-frame down and left, showing each
+        // effected layer's top-right quarter in the bottom-left quarter of the desktop.
+        let projection = SceneRenderer.aspectFilledProjection(
+            scene: scene(ortho: SIMD2(1920, 1080)), drawableSize: drawable
+        )
+        let quad = projection * SceneRenderer.fullscreenTransform(projection: projection)
+
+        for corner in [SIMD2<Float>(-0.5, -0.5), SIMD2(0.5, -0.5), SIMD2(-0.5, 0.5), SIMD2(0.5, 0.5)] {
+            let clip = quad * SIMD4(corner.x, corner.y, 0, 1)
+            let expected = corner * 2
+            #expect(abs(clip.x / clip.w - expected.x) < 1e-4 && abs(clip.y / clip.w - expected.y) < 1e-4,
+                    "corner \(corner) lands at (\(clip.x / clip.w), \(clip.y / clip.w)), not \(expected)")
+        }
+    }
+
     @Test("A texture slot with nothing bound still reports a usable resolution")
     func missingResolutionIsNeverZero() {
         // `foliagesway.vert` computes `g_Texture0Resolution.z / .w` and feeds the result into

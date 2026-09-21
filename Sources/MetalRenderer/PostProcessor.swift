@@ -97,7 +97,7 @@ public final class PostProcessor {
         }
 
         guard !steps.isEmpty else {
-            blit(source: source, destination: destination, commandBuffer: commandBuffer)
+            copy(source, to: destination, commandBuffer: commandBuffer)
             return
         }
 
@@ -109,7 +109,7 @@ public final class PostProcessor {
                 width: source.width, height: source.height, pixelFormat: source.pixelFormat
             )
             if let originalCopy {
-                blit(source: source, destination: originalCopy.texture, commandBuffer: commandBuffer)
+                copy(source, to: originalCopy.texture, commandBuffer: commandBuffer)
             }
         }
         defer { if let originalCopy { pool.release(originalCopy) } }
@@ -128,7 +128,7 @@ public final class PostProcessor {
                     width: source.width, height: source.height, pixelFormat: source.pixelFormat
                 ) else {
                     // Out of memory mid-chain: emit what we have rather than a black frame.
-                    blit(source: current, destination: destination, commandBuffer: commandBuffer)
+                    copy(current, to: destination, commandBuffer: commandBuffer)
                     if let scratch { pool.release(scratch) }
                     return
                 }
@@ -190,13 +190,22 @@ public final class PostProcessor {
         encoder.endEncoding()
     }
 
-    private func blit(
-        source: any MTLTexture, destination: any MTLTexture, commandBuffer: any MTLCommandBuffer
+    /// Copies `source` onto `destination` by drawing it, never by blitting.
+    ///
+    /// A blit needs both textures exactly the same size, and the pool hands out textures
+    /// rounded up to its buckets — a 1512x982 frame accumulates in a 1536x1024 target — so the
+    /// size check failed on every such frame and the copy was silently skipped. It also cannot
+    /// write a drawable at all: a desktop layer's textures are framebuffer-only. Between them,
+    /// a scene with a per-layer effect and no scene-wide one delivered a transparent frame to
+    /// the desktop, which showed as black. A draw samples 0..1 and fills whatever it is given.
+    private func copy(
+        _ source: any MTLTexture, to destination: any MTLTexture,
+        commandBuffer: any MTLCommandBuffer
     ) {
-        guard source.width == destination.width, source.height == destination.height,
-              let blit = commandBuffer.makeBlitCommandEncoder() else { return }
-        blit.copy(from: source, to: destination)
-        blit.endEncoding()
+        encode(
+            function: "post_copy", input: source, secondary: nil, target: destination,
+            params: .zero, direction: .zero, commandBuffer: commandBuffer
+        )
     }
 
     private func pipeline(named name: String, pixelFormat: MTLPixelFormat) -> (any MTLRenderPipelineState)? {
@@ -242,6 +251,12 @@ public final class PostProcessor {
         out.uv = positions[vid] * 0.5 + 0.5;
         out.uv.y = 1.0 - out.uv.y;
         return out;
+    }
+
+    fragment float4 post_copy(VertexOut in [[stage_in]],
+                              texture2d<float> tex [[texture(0)]],
+                              sampler samp [[sampler(0)]]) {
+        return tex.sample(samp, in.uv);
     }
 
     // Nine-tap Gaussian, run separably so a radius-N blur costs 2N samples rather than N*N.

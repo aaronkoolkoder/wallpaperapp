@@ -147,55 +147,14 @@ public final class SceneRenderer {
         let cameraOffset = camera.offset
         runScripts(scene: scene)
 
-        let descriptor = MTLRenderPassDescriptor()
-        descriptor.colorAttachments[0].texture = drawable.texture
-        descriptor.colorAttachments[0].loadAction = .clear
-        descriptor.colorAttachments[0].storeAction = .store
-        descriptor.colorAttachments[0].clearColor = MTLClearColor(
-            red: Double(scene.clearColor.x),
-            green: Double(scene.clearColor.y),
-            blue: Double(scene.clearColor.z),
-            alpha: 1
-        )
-
-        // The encoder is created inside whichever path runs. Creating one here and leaving it
-        // unended on the effects path is a Metal API violation, not merely wasteful.
         guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else {
             lastOutcome = .noCommandBuffer
             return
         }
-
-        // Aspect-fill the scene's ortho box into the drawable. Letterboxing a wallpaper would
-        // show bars at the edges of the desktop, which is never what anyone wants.
-        let projection = Self.aspectFilledProjection(
-            scene: scene,
-            drawableSize: SIMD2(Float(drawable.texture.width), Float(drawable.texture.height))
-        )
-
-        let hasEffects = !scene.sceneEffects.isEmpty
-            || workingLayers.contains { !$0.effects.isEmpty }
-
-        if !hasEffects {
-            // Fast path. Most scenes have no post-processing, and routing them through an
-            // intermediate target would cost a full-frame copy for nothing.
-            guard let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) else {
-                lastOutcome = .noEncoder
-                return
-            }
-            buildDraws(scene: scene, cameraOffset: cameraOffset, into: &drawScratch)
-            encodeDraws(
-                drawScratch, into: encoder, projection: projection, pixelFormat: layer.pixelFormat
-            )
-            encoder.endEncoding()
-        } else {
-            renderWithEffects(
-                scene: scene,
-                cameraOffset: cameraOffset,
-                projection: projection,
-                drawable: drawable,
-                clear: descriptor.colorAttachments[0].clearColor,
-                buffer: buffer
-            )
+        guard compose(scene: scene, cameraOffset: cameraOffset, into: drawable.texture, buffer: buffer)
+        else {
+            lastOutcome = .noEncoder
+            return
         }
 
         buffer.present(drawable)
@@ -204,6 +163,63 @@ public final class SceneRenderer {
         pool.endFrame()
         framesRendered &+= 1
         lastOutcome = .rendered
+    }
+
+    /// Draws one frame of `scene` into `target`.
+    ///
+    /// The single place a frame is composed. The desktop hands it a drawable's texture and the
+    /// offscreen harness hands it a readable one — and nothing else differs. The harness used to
+    /// have a composition of its own that folded every layer's effects into one scene-wide
+    /// chain, and so for as long as it existed it could not see the per-layer path at all:
+    /// the one wallpapers with a layer effect actually take on the desktop.
+    ///
+    /// - Returns: false when no encoder could be made, so the frame was not drawn.
+    private func compose(
+        scene: RenderableScene,
+        cameraOffset: SIMD2<Float>,
+        into target: any MTLTexture,
+        buffer: any MTLCommandBuffer
+    ) -> Bool {
+        let clear = MTLClearColor(
+            red: Double(scene.clearColor.x),
+            green: Double(scene.clearColor.y),
+            blue: Double(scene.clearColor.z),
+            alpha: 1
+        )
+        // Aspect-fill the scene's ortho box into the target. Letterboxing a wallpaper would
+        // show bars at the edges of the desktop, which is never what anyone wants.
+        let projection = Self.aspectFilledProjection(
+            scene: scene,
+            drawableSize: SIMD2(Float(target.width), Float(target.height))
+        )
+
+        let hasEffects = !scene.sceneEffects.isEmpty
+            || workingLayers.contains { !$0.effects.isEmpty }
+
+        if hasEffects {
+            renderWithEffects(
+                scene: scene, cameraOffset: cameraOffset, projection: projection,
+                target: target, clear: clear, buffer: buffer
+            )
+            return true
+        }
+
+        // Fast path. Most scenes have no post-processing, and routing them through an
+        // intermediate target would cost a full-frame copy for nothing. The encoder is made
+        // here rather than by the caller: one left unended on the effects path would be a
+        // Metal API violation, not merely waste.
+        let descriptor = MTLRenderPassDescriptor()
+        descriptor.colorAttachments[0].texture = target
+        descriptor.colorAttachments[0].loadAction = .clear
+        descriptor.colorAttachments[0].storeAction = .store
+        descriptor.colorAttachments[0].clearColor = clear
+        guard let encoder = buffer.makeRenderCommandEncoder(descriptor: descriptor) else {
+            return false
+        }
+        buildDraws(scene: scene, cameraOffset: cameraOffset, into: &drawScratch)
+        encodeDraws(drawScratch, into: encoder, projection: projection, pixelFormat: target.pixelFormat)
+        encoder.endEncoding()
+        return true
     }
 
     /// Encodes draws in order, switching between the built-in shader and each material's own.
@@ -431,15 +447,15 @@ public final class SceneRenderer {
         scene: RenderableScene,
         cameraOffset: SIMD2<Float>,
         projection: simd_float4x4,
-        drawable: any CAMetalDrawable,
+        target: any MTLTexture,
         clear: MTLClearColor,
         buffer: any MTLCommandBuffer
     ) {
-        let width = drawable.texture.width
-        let height = drawable.texture.height
+        let width = target.width
+        let height = target.height
 
         guard let accumulator = pool.acquire(
-            width: width, height: height, pixelFormat: drawable.texture.pixelFormat
+            width: width, height: height, pixelFormat: target.pixelFormat
         ) else { return }
         defer { pool.release(accumulator) }
 
@@ -477,9 +493,9 @@ public final class SceneRenderer {
             batch.removeAll(keepingCapacity: true)
 
             guard let isolated = pool.acquire(
-                width: width, height: height, pixelFormat: drawable.texture.pixelFormat
+                width: width, height: height, pixelFormat: target.pixelFormat
             ), let processed = pool.acquire(
-                width: width, height: height, pixelFormat: drawable.texture.pixelFormat
+                width: width, height: height, pixelFormat: target.pixelFormat
             ) else {
                 // No memory for the chain: draw the layer unprocessed rather than dropping it.
                 batch.append(draw)
@@ -539,23 +555,28 @@ public final class SceneRenderer {
             into: accumulator.texture, clearFirst: false
         )
 
-        // Scene-wide chain straight into the drawable.
+        // Scene-wide chain straight into the target.
         applyEffectChain(
             scene.sceneEffects,
             source: accumulator.texture,
-            destination: drawable.texture,
+            destination: target,
             buffer: buffer
         )
     }
 
     /// A quad that exactly covers the frame under the scene's projection.
     ///
-    /// The composite step needs to blit a processed layer back in the same coordinate space the
-    /// rest of the scene draws in, so it has to be expressed as a quad rather than a blit.
+    /// The composite step draws a processed layer back in the same coordinate space the rest of
+    /// the scene draws in, so it has to be a quad placed *through* the projection: the unit quad
+    /// scaled to clip space's ±1, taken back through the projection's inverse.
+    ///
+    /// Derived rather than assumed. This used to take only the projection's scale, which is
+    /// right only for a projection centred on zero — and the scene projection places its
+    /// corner at the origin, with the centre folded into the translation. The quad therefore
+    /// landed a full half-frame down and to the left, and every layer with an effect of its own
+    /// showed on the desktop as its top-right quarter, in the bottom-left quarter of the screen.
     static func fullscreenTransform(projection: simd_float4x4) -> simd_float4x4 {
-        let halfWidth = 1 / max(0.000001, projection.columns.0.x)
-        let halfHeight = 1 / max(0.000001, projection.columns.1.y)
-        return simd_float4x4(diagonal: SIMD4(halfWidth * 2, halfHeight * 2, 1, 1))
+        projection.inverse * simd_float4x4(diagonal: SIMD4(2, 2, 1, 1))
     }
 
     /// Scale the scene so it covers the drawable, cropping the longer axis rather than letting
@@ -659,70 +680,10 @@ extension SceneRenderer {
         // Shared, not private: the whole point is to read these pixels back on the CPU.
         descriptor.storageMode = .shared
 
-        guard let target = renderDevice.device.makeTexture(descriptor: descriptor) else {
-            return nil
-        }
-
-        // Effects need somewhere to read from, so composition goes to an intermediate whenever
-        // the scene post-processes. Rendering straight to `target` would silently skip the
-        // chain — which is exactly the bug this path had: the headless harness was exercising a
-        // different pipeline from the app, so bloom rendered live but not in tests.
-        let hasEffects = !scene.sceneEffects.isEmpty
-            || scene.layers.contains { !$0.effects.isEmpty }
-
-        var intermediate: PooledTexture?
-        if hasEffects {
-            intermediate = pool.acquire(width: width, height: height, pixelFormat: .bgra8Unorm)
-        }
-        defer { if let intermediate { pool.release(intermediate) } }
-        let compositionTarget: any MTLTexture = intermediate?.texture ?? target
-
-        let pass = MTLRenderPassDescriptor()
-        pass.colorAttachments[0].texture = compositionTarget
-        pass.colorAttachments[0].loadAction = .clear
-        pass.colorAttachments[0].storeAction = .store
-        pass.colorAttachments[0].clearColor = MTLClearColor(
-            red: Double(scene.clearColor.x),
-            green: Double(scene.clearColor.y),
-            blue: Double(scene.clearColor.z),
-            alpha: 1
-        )
-
-        guard let buffer = renderDevice.makeRetainedCommandBuffer(label: "offscreen"),
-              let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
+        guard let target = renderDevice.device.makeTexture(descriptor: descriptor),
+              let buffer = renderDevice.makeRetainedCommandBuffer(label: "offscreen"),
+              compose(scene: scene, cameraOffset: cameraOffset, into: target, buffer: buffer)
         else { return nil }
-
-        let projection = Self.aspectFilledProjection(
-            scene: scene, drawableSize: SIMD2(Float(width), Float(height))
-        )
-
-        var draws = workingLayers.filter(\.isVisible).map { layer in
-            Self.sceneDraw(for: layer, cameraOffset: cameraOffset)
-        }
-        var particles: [QuadDraw] = []
-        for system in scene.particles {
-            system.appendDraws(to: &particles, cameraOffset: cameraOffset)
-        }
-        draws.append(contentsOf: particles.map { SceneDraw(quad: $0, program: nil) })
-
-        // The same dispatcher the live path uses. A harness that drew through a different
-        // pipeline would verify something the app never renders — which has already been a bug
-        // here once, when effects were skipped offscreen.
-        encodeDraws(draws, into: encoder, projection: projection, pixelFormat: .bgra8Unorm)
-        encoder.endEncoding()
-
-        if hasEffects, intermediate != nil {
-            // Per-layer chains are folded into the scene chain here. This path is a diagnostic,
-            // and reproducing exact per-layer isolation would mean duplicating the whole live
-            // composition path for no extra diagnostic value.
-            let combined = scene.layers.flatMap(\.effects) + scene.sceneEffects
-            applyEffectChain(
-                combined,
-                source: compositionTarget,
-                destination: target,
-                buffer: buffer
-            )
-        }
 
         buffer.commit()
         buffer.waitUntilCompleted()

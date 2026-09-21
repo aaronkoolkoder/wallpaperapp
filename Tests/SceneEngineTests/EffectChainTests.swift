@@ -148,6 +148,32 @@ struct EffectChainTests {
         #expect(pixel.g < 60)
     }
 
+    @Test("A layer's effect output covers the whole frame, not one corner of it")
+    func effectedLayerCoversTheFrame() throws {
+        // Samples all four quadrants, not only the centre: a composite placed a half-frame off
+        // still passes through the middle pixel. This goes through the same composition the
+        // desktop uses — the harness once had its own, which never ran the per-layer path.
+        let root = try makeWallpaper(passes: 1)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let device = try #require(MTLCreateSystemDefaultDevice())
+        let renderer = try SceneRenderer(renderDevice: try RenderDevice(device: device))
+        renderer.setScene(try SceneRenderer.loadScene(
+            directory: root, packageURL: nil, wallpaperID: "swap", device: device,
+            materials: MaterialCompiler(device: device, cache: ShaderCache(directory: nil))
+        ))
+        // Not a size the pool's buckets fit exactly, which is what the desktop always is.
+        let image = try #require(renderer.renderOffscreen(width: 50, height: 30))
+        let data = try #require(image.dataProvider?.data as Data?)
+
+        for (x, y) in [(8, 6), (41, 6), (8, 23), (41, 23)] {
+            let offset = y * image.bytesPerRow + x * 4
+            let (b, g, r, a) = (data[offset], data[offset + 1], data[offset + 2], data[offset + 3])
+            #expect(b > 200 && r < 60 && g < 60 && a > 200,
+                    "(\(x),\(y)) is r=\(r) g=\(g) b=\(b) a=\(a), not the effect's blue")
+        }
+    }
+
     @Test("A two-pass chain runs both passes, in order")
     func runsChainInOrder() throws {
         // Red, then blue, then green. Getting blue would mean the second pass never ran;
