@@ -19,7 +19,11 @@ public struct EngineUniforms: Sendable {
     public var pointerPosition: SIMD2<Float>
     /// Output size in pixels.
     public var screenSize: SIMD2<Float>
-    /// Per texture slot: width, height, 1/width, 1/height.
+    /// Per texture slot: the allocated texture's width and height in `xy`, and the image
+    /// inside it in `zw`. The stock shaders are what pin this down — `foliagesway.vert` takes
+    /// `z / w` as the image's aspect ratio, and the mask path rescales a UV by `z / x`, which
+    /// only means anything if `xy` is the allocation and `zw` the content. With no padding
+    /// the two are equal.
     public var textureResolutions: [SIMD4<Float>]
     /// 16-band spectrum per channel, when audio reactivity is running.
     public var audioSpectrumLeft: [Float]

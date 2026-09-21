@@ -77,6 +77,9 @@ public final class MaterialRenderer {
         /// Sampler name to the texture it should read, e.g. `g_Texture0`.
         public var textures: [String: any MTLTexture]
         public var constants: [String: DynamicValue]
+        /// `g_TextureNResolution` per sampler: allocation in `xy`, image in `zw`. Empty means
+        /// "ask the textures themselves", which is right for anything not padded.
+        public var textureSizes: [String: SIMD4<Float>]
         /// The user's own settings for this wallpaper, keyed as `project.json` keys them.
         public var overrides: [String: DynamicValue]
         public var engine: EngineUniforms
@@ -87,6 +90,7 @@ public final class MaterialRenderer {
             projection: simd_float4x4,
             textures: [String: any MTLTexture] = [:],
             constants: [String: DynamicValue] = [:],
+            textureSizes: [String: SIMD4<Float>] = [:],
             overrides: [String: DynamicValue] = [:],
             engine: EngineUniforms = EngineUniforms(),
             wrapsUVs: Bool = false
@@ -95,6 +99,7 @@ public final class MaterialRenderer {
             self.projection = projection
             self.textures = textures
             self.constants = constants
+            self.textureSizes = textureSizes
             self.overrides = overrides
             self.engine = engine
             self.wrapsUVs = wrapsUVs
@@ -115,6 +120,17 @@ public final class MaterialRenderer {
         // reaches it: unlike the built-in quad path there is no separate transform uniform.
         var engine = context.engine
         engine.modelViewProjection = context.projection * context.transform
+        // `g_TextureNResolution` is how a Wallpaper Engine shader learns the size of what it
+        // samples, and stock effects divide by it: `foliagesway.vert` computes an aspect ratio
+        // as `g_Texture0Resolution.z / .w` and feeds it into every UV the fragment stage then
+        // samples with. Nothing ever filled this array, so that division was 0/0, and a single
+        // NaN UV turns the whole pass white. That is what "scenes are just a static image"
+        // actually was — the composition underneath was correct the whole time.
+        engine.textureResolutions = Self.textureResolutions(
+            declared: program.declaredSamplers,
+            textures: context.textures,
+            sizes: context.textureSizes
+        )
 
         var unsupplied: [String] = []
 
@@ -171,6 +187,41 @@ public final class MaterialRenderer {
     }
 
     public func resetCounters() { missingTextureBindings = 0 }
+
+    /// Resolutions indexed by the `N` in `g_TextureN`, which is how `g_TextureNResolution`
+    /// is looked up.
+    ///
+    /// A slot with no texture reports 1x1 rather than 0x0. Both are untrue, but a shader that
+    /// divides by a missing texture's size gets finite nonsense from one and a NaN from the
+    /// other — and a NaN spreads to every pixel the UV touches, so one absent stock asset
+    /// would blank the whole wallpaper instead of dropping one detail.
+    /// - Parameter sizes: measured resolutions for samplers whose texture is padded, where the
+    ///   allocation alone would overstate the image. Anything absent falls back to the
+    ///   allocation, which is right for render targets and for unpadded textures alike.
+    static func textureResolutions(
+        declared: [String],
+        textures: [String: any MTLTexture],
+        sizes: [String: SIMD4<Float>] = [:]
+    ) -> [SIMD4<Float>] {
+        var resolutions: [SIMD4<Float>] = []
+        for name in Set(declared).union(textures.keys).union(sizes.keys).sorted() {
+            guard name.hasPrefix("g_Texture"),
+                  let slot = Int(name.dropFirst("g_Texture".count)), slot >= 0
+            else { continue }
+            if resolutions.count <= slot {
+                resolutions.append(contentsOf: repeatElement(
+                    SIMD4(1, 1, 1, 1), count: slot + 1 - resolutions.count
+                ))
+            }
+            if let measured = sizes[name] {
+                resolutions[slot] = measured
+            } else if let texture = textures[name] {
+                let width = Float(texture.width), height = Float(texture.height)
+                resolutions[slot] = SIMD4(width, height, width, height)
+            }
+        }
+        return resolutions
+    }
 
     // MARK: - Buffers
 

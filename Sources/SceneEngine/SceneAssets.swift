@@ -17,7 +17,7 @@ public final class SceneAssets {
 
     /// Cached by resolved path. Two layers sharing a texture — extremely common, since scenes
     /// reuse a sprite across many objects — upload it once.
-    private var textureCache: [String: any MTLTexture] = [:]
+    private var textureCache: [String: SceneTexture] = [:]
 
     public private(set) var report: CompatibilityReport
 
@@ -133,7 +133,14 @@ public final class SceneAssets {
         return (material, model)
     }
 
-    public func texture(at path: String, device: any MTLDevice) -> (any MTLTexture)? {
+    /// The texture, and the size of the image inside it.
+    ///
+    /// Wallpaper Engine pads a `.tex` up to a power of two and records the real image size in
+    /// the header, so a 2372x1334 painting arrives as a 4096x2048 allocation with the image in
+    /// the top-left corner and nothing in the rest. Anything that maps a UV has to know both
+    /// sizes; sampling 0..1 shows the empty margin as though it were content, which is what put
+    /// a wallpaper in the corner of the desktop surrounded by the clear colour.
+    public func sceneTexture(at path: String, device: any MTLDevice) -> SceneTexture? {
         if let cached = textureCache[path] { return cached }
 
         guard let data = data(for: path) else {
@@ -144,8 +151,17 @@ public final class SceneAssets {
         do {
             let parsed = try TEXTexture(data: data)
             let texture = try loader.makeTexture(from: parsed, device: device, label: path)
-            textureCache[path] = texture
-            return texture
+            // An encoded texture decodes to exactly the image, so the header's image size can
+            // exceed what was allocated; clamp rather than describe a region that is not there.
+            let loaded = SceneTexture(
+                texture: texture,
+                imageSize: SIMD2(
+                    Float(min(max(parsed.imageWidth, 1), texture.width)),
+                    Float(min(max(parsed.imageHeight, 1), texture.height))
+                )
+            )
+            textureCache[path] = loaded
+            return loaded
         } catch {
             report.add(
                 .degraded, feature: "Texture",
@@ -153,6 +169,12 @@ public final class SceneAssets {
             )
             return nil
         }
+    }
+
+    /// For callers that only sample 0..1 anyway — particle sprites and effect bindings, whose
+    /// UVs come from the emitter or the pass rather than from a layer's geometry.
+    public func texture(at path: String, device: any MTLDevice) -> (any MTLTexture)? {
+        sceneTexture(at: path, device: device)?.texture
     }
 
     public var cachedTextureCount: Int { textureCache.count }

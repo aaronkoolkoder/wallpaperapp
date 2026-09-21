@@ -21,6 +21,8 @@ public struct RenderableLayer: @unchecked Sendable {
     public var tint: SIMD4<Float>
     public var blend: BlendMode
     public var texture: (any MTLTexture)?
+    /// The UV the image ends at, which is 1 unless the texture was padded to a power of two.
+    public var uvScale: SIMD2<Float> = SIMD2(1, 1)
     /// Parallax response.
     public var parallaxDepth: SIMD2<Float>
     /// Post-process chain applied to this layer alone, before it is composited.
@@ -39,6 +41,9 @@ public struct RenderableLayer: @unchecked Sendable {
 
     /// Uniform values baked into the material by the wallpaper's author.
     public var materialConstants: [String: DynamicValue] = [:]
+
+    /// `g_TextureNResolution` per sampler: allocation in `xy`, image in `zw`.
+    public var materialTextureSizes: [String: SIMD4<Float>] = [:]
 
     /// Model matrix with a camera offset folded into the translation.
     public func modelMatrix(cameraOffset: SIMD2<Float>) -> simd_float4x4 {
@@ -456,18 +461,21 @@ public struct SceneBuilder {
         }
         let material = resolved.material
 
-        var texture: (any MTLTexture)?
+        var loaded: SceneTexture?
         if let texturePath = pass.primaryTexture {
-            texture = assets.texture(at: texturePath, device: device)
+            loaded = assets.sceneTexture(at: texturePath, device: device)
         }
+        let texture = loaded?.texture
 
         // Fall back to the texture's own dimensions when the object does not state a size, which
         // is the common case for a layer that is simply its image at natural scale.
         let size: SIMD2<Float>
         if let declared = object.size {
             size = SIMD2(Float(declared.x), Float(declared.y))
-        } else if let texture {
-            size = SIMD2(Float(texture.width), Float(texture.height))
+        } else if let loaded {
+            // The image, not the allocation: a padded texture would otherwise make a layer
+            // measured in power-of-two pixels, roughly twice the size the author drew.
+            size = loaded.imageSize
         } else {
             size = SIMD2(100, 100)
         }
@@ -480,7 +488,7 @@ public struct SceneBuilder {
 
         let compiled = compileMaterial(
             pass, name: imagePath, assets: assets, device: device,
-            primaryTexture: texture, materials: materials, report: &report
+            primaryTexture: loaded, materials: materials, report: &report
         )
 
         var layer = RenderableLayer(
@@ -505,7 +513,9 @@ public struct SceneBuilder {
         )
         layer.program = compiled?.program
         layer.materialTextures = compiled?.textures ?? [:]
+        layer.materialTextureSizes = compiled?.sizes ?? [:]
         layer.materialConstants = pass.constantShaderValues
+        layer.uvScale = loaded?.uvScale ?? SIMD2(1, 1)
         return layer
     }
 
@@ -546,10 +556,14 @@ public struct SceneBuilder {
         name: String,
         assets: SceneAssets,
         device: any MTLDevice,
-        primaryTexture: (any MTLTexture)?,
+        primaryTexture: SceneTexture?,
         materials: MaterialCompiler?,
         report: inout CompatibilityReport
-    ) -> (program: MaterialProgram, textures: [String: any MTLTexture])? {
+    ) -> (
+        program: MaterialProgram,
+        textures: [String: any MTLTexture],
+        sizes: [String: SIMD4<Float>]
+    )? {
         guard let materials, materials.isAvailable else { return nil }
         guard let shader = pass.shader, !shader.isEmpty else { return nil }
 
@@ -593,23 +607,58 @@ public struct SceneBuilder {
         // and the colour map would be bound to a sampler the shader does not read, leaving the
         // layer flat white.
         var textures: [String: any MTLTexture] = [:]
+        var sizes: [String: SIMD4<Float>] = [:]
         for (index, path) in pass.textures.enumerated() {
             let samplerName = Self.samplerName(
                 forTextureSlot: index, declared: program.declaredSamplers
             )
             if index == 0, let primaryTexture {
-                textures[samplerName] = primaryTexture
+                textures[samplerName] = primaryTexture.texture
+                sizes[samplerName] = primaryTexture.resolution
                 continue
             }
             guard let path, !path.isEmpty else { continue }
-            if let texture = assets.texture(at: path, device: device) {
-                textures[samplerName] = texture
+            if let loaded = assets.sceneTexture(at: path, device: device) {
+                textures[samplerName] = loaded.texture
+                sizes[samplerName] = loaded.resolution
             }
         }
         if textures.isEmpty, let primaryTexture, let first = program.declaredSamplers.first {
-            textures[first] = primaryTexture
+            textures[first] = primaryTexture.texture
+            sizes[first] = primaryTexture.resolution
         }
 
-        return (program, textures)
+        return (program, textures, sizes)
+    }
+}
+
+/// A loaded texture together with the size of the image inside it.
+///
+/// Wallpaper Engine pads textures up to a power of two, so the allocation is routinely larger
+/// than the picture it holds. The two sizes are what `g_TextureNResolution` reports to a
+/// shader — `xy` the allocation, `zw` the image — and what the built-in quad path needs to
+/// build a UV rectangle that stops at the edge of the content.
+public struct SceneTexture {
+    public let texture: any MTLTexture
+    public let imageSize: SIMD2<Float>
+
+    public init(texture: any MTLTexture, imageSize: SIMD2<Float>) {
+        self.texture = texture
+        self.imageSize = imageSize
+    }
+
+    /// The whole allocation, padding included.
+    public var allocationSize: SIMD2<Float> {
+        SIMD2(Float(texture.width), Float(texture.height))
+    }
+
+    /// The fraction of the allocation the image occupies, which is the UV it ends at.
+    public var uvScale: SIMD2<Float> {
+        SIMD2(imageSize.x / max(allocationSize.x, 1), imageSize.y / max(allocationSize.y, 1))
+    }
+
+    /// `g_TextureNResolution`: allocation in `xy`, image in `zw`.
+    public var resolution: SIMD4<Float> {
+        SIMD4(allocationSize.x, allocationSize.y, imageSize.x, imageSize.y)
     }
 }

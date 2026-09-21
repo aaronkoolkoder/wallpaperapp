@@ -143,6 +143,23 @@ public final class EffectChainRunner {
                 }
             }
 
+            if ProcessInfo.processInfo.environment["DIORAMA_EFFECT_TRACE"] != nil {
+                let bound = pass.program.declaredSamplers.enumerated().map { slot, name in
+                    let texture = textures[name]
+                    let what: String
+                    if texture == nil { what = "UNBOUND" }
+                    else if texture === source { what = "source" }
+                    else { what = "\(texture!.width)x\(texture!.height)" }
+                    return "[\(slot)]\(name)=\(what)"
+                }.joined(separator: " ")
+                let slots = pass.program.textureSlots
+                    .sorted { $0.value < $1.value }
+                    .map { "\($0.key)->\($0.value)" }.joined(separator: " ")
+                FileHandle.standardError.write(Data(
+                    "effect \(effect.name) pass \(index): \(bound) | reflected: \(slots)\n".utf8
+                ))
+            }
+
             // A pass naming no target writes the chain's output; so does the final pass, whose
             // target — if it names one — nothing downstream will read.
             let output: any MTLTexture

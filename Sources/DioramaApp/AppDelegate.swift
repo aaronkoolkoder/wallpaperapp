@@ -86,6 +86,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // reports resident memory, to catch resources that are not released on teardown. A
         // wallpaper app that leaks a few MB per switch looks fine in a demo and is unusable
         // after a week of real use, which is exactly the failure this is meant to surface.
+        // DIORAMA_HOLD=<id> plays one wallpaper, prints the surface's window number, and stays
+        // up so the window itself can be captured. Capturing our own window answers "is this
+        // drawing" directly, without photographing anything of the user's.
+        if let wanted = ProcessInfo.processInfo.environment["DIORAMA_HOLD"] {
+            Task { @MainActor in
+                for _ in 0 ..< 80 where self.library.items.isEmpty {
+                    try? await Task.sleep(for: .milliseconds(100))
+                }
+                guard let item = self.library.items.first(where: { $0.id == wanted })
+                    ?? self.library.items.first(where: { $0.type == .scene && $0.isPlayable })
+                else { print("hold: nothing to play"); return }
+
+                self.play(item)
+                try? await Task.sleep(for: .seconds(2))
+                for surface in self.coordinator.surfaces.values {
+                    print("hold: window=\(surface.windowNumber) display=\(surface.displayID) "
+                          + "occluded=\(surface.isOccluded) title=\(item.title)")
+                }
+                if let playback = self.playback {
+                    for display in self.coordinator.surfaces.keys {
+                        print("hold: frames=\(playback.framesRendered(on: display)) "
+                              + "suspended=\(playback.isSuspended(on: display))")
+                    }
+                }
+                print("hold: ready")
+                // Stdout is block-buffered into a pipe, and this process is killed rather than
+                // exiting, so without this the whole diagnostic is lost.
+                fflush(stdout)
+            }
+        }
+
         if let raw = ProcessInfo.processInfo.environment["DIORAMA_STRESS"],
            let cycles = Int(raw) {
             Task { @MainActor in await self.runStress(cycles: cycles) }
@@ -233,6 +264,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         for detail in firstFrameDetails.prefix(3) { print("  \(detail)") }
+
+
+        // Every window we own, on screen or not, with the level the window server gave it.
+        // `excludeDesktopElements` would filter out exactly the kind of window this app makes.
+        let all = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? []
+        let mine = all.filter { ($0[kCGWindowOwnerPID as String] as? pid_t) == getpid() }
+        print("our windows: \(mine.count)")
+        for window in mine {
+            let bounds = window[kCGWindowBounds as String] as? [String: Any] ?? [:]
+            print(
+                "  level=\(window[kCGWindowLayer as String] as? Int ?? -999)"
+                + " onscreen=\(window[kCGWindowIsOnscreen as String] as? Bool ?? false)"
+                + " alpha=\(window[kCGWindowAlpha as String] as? Double ?? -1)"
+                + " size=\(bounds["Width"] ?? "?")x\(bounds["Height"] ?? "?")"
+            )
+        }
+        for surface in coordinator.surfaces.values {
+            print("  surface \(surface.displayID): occluded=\(surface.isOccluded)")
+        }
         NSApp.terminate(nil)
     }
 

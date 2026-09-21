@@ -23,6 +23,9 @@ public final class SceneRenderer {
         var program: MaterialProgram?
         var textures: [String: any MTLTexture] = [:]
         var constants: [String: DynamicValue] = [:]
+        /// `g_TextureNResolution` per sampler, which a padded texture makes differ from the
+        /// allocation the renderer could otherwise infer on its own.
+        var textureSizes: [String: SIMD4<Float>] = [:]
     }
 
     private let renderDevice: RenderDevice
@@ -164,7 +167,7 @@ public final class SceneRenderer {
 
         // Aspect-fill the scene's ortho box into the drawable. Letterboxing a wallpaper would
         // show bars at the edges of the desktop, which is never what anyone wants.
-        let projection = aspectFilledProjection(
+        let projection = Self.aspectFilledProjection(
             scene: scene,
             drawableSize: SIMD2(Float(drawable.texture.width), Float(drawable.texture.height))
         )
@@ -237,6 +240,7 @@ public final class SceneRenderer {
                     projection: projection,
                     textures: draw.textures,
                     constants: draw.constants,
+                    textureSizes: draw.textureSizes,
                     overrides: propertyOverrides,
                     engine: engineUniforms()
                 ),
@@ -402,13 +406,18 @@ public final class SceneRenderer {
         SceneDraw(
             quad: QuadDraw(
                 transform: layer.modelMatrix(cameraOffset: cameraOffset),
+                // Stop at the edge of the image. A Wallpaper Engine texture is padded up to a
+                // power of two, so sampling the full 0..1 draws the empty margin as content and
+                // shrinks the picture into a corner of the surface.
+                uvRect: SIMD4(0, 0, layer.uvScale.x, layer.uvScale.y),
                 tint: layer.tint,
                 texture: layer.texture,
                 blend: layer.blend
             ),
             program: layer.program,
             textures: layer.materialTextures,
-            constants: layer.materialConstants
+            constants: layer.materialConstants,
+            textureSizes: layer.materialTextureSizes
         )
     }
 
@@ -551,7 +560,14 @@ public final class SceneRenderer {
 
     /// Scale the scene so it covers the drawable, cropping the longer axis rather than letting
     /// the aspect ratios diverge and stretching the image.
-    private func aspectFilledProjection(
+    /// Aspect-*fill* the scene's ortho box into the target: preserve the scene's aspect ratio
+    /// and crop the overflowing axis, rather than stretching or letterboxing.
+    ///
+    /// Both the axis scale and that axis's translation, because the projection places the
+    /// scene's *corner* origin — NDC is `(x - centre) * scale`, with the centre term folded
+    /// into column 3. Scaling only column 0 or 1 leaves the centre at its old magnitude, so the
+    /// scene slides off-centre and leaves a band of clear colour down one edge.
+    static func aspectFilledProjection(
         scene: RenderableScene, drawableSize: SIMD2<Float>
     ) -> simd_float4x4 {
         var projection = scene.projectionMatrix
@@ -561,10 +577,14 @@ public final class SceneRenderer {
         let targetAspect = drawableSize.x / drawableSize.y
 
         if targetAspect > sceneAspect {
-            // Drawable is wider: match width, crop height.
-            projection.columns.1.y *= sceneAspect / targetAspect
+            // Target is relatively wider: match its width, which overflows vertically.
+            let scale = targetAspect / sceneAspect
+            projection.columns.1.y *= scale
+            projection.columns.3.y *= scale
         } else {
-            projection.columns.0.x *= targetAspect / sceneAspect
+            let scale = sceneAspect / targetAspect
+            projection.columns.0.x *= scale
+            projection.columns.3.x *= scale
         }
         return projection
     }
@@ -672,7 +692,7 @@ extension SceneRenderer {
               let encoder = buffer.makeRenderCommandEncoder(descriptor: pass)
         else { return nil }
 
-        let projection = aspectFilledProjectionForTesting(
+        let projection = Self.aspectFilledProjection(
             scene: scene, drawableSize: SIMD2(Float(width), Float(height))
         )
 
@@ -711,20 +731,6 @@ extension SceneRenderer {
         return Self.makeImage(from: target)
     }
 
-    private func aspectFilledProjectionForTesting(
-        scene: RenderableScene, drawableSize: SIMD2<Float>
-    ) -> simd_float4x4 {
-        var projection = scene.projectionMatrix
-        guard drawableSize.x > 0, drawableSize.y > 0 else { return projection }
-        let sceneAspect = scene.orthoSize.x / max(1, scene.orthoSize.y)
-        let targetAspect = drawableSize.x / drawableSize.y
-        if targetAspect > sceneAspect {
-            projection.columns.1.y *= sceneAspect / targetAspect
-        } else {
-            projection.columns.0.x *= targetAspect / sceneAspect
-        }
-        return projection
-    }
 
     static func makeImage(from texture: any MTLTexture) -> CGImage? {
         let width = texture.width, height = texture.height

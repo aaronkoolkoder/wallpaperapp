@@ -332,13 +332,20 @@ case "scene":
         // renderer did before materials were compiled. Having both in one binary is what makes
         // the cost of running a wallpaper's own shaders measurable rather than argued about.
         let compileMaterials = !arguments.contains("--no-shaders")
-        let scene = try SceneRenderer.loadScene(
+        var scene = try SceneRenderer.loadScene(
             directory: directory,
             packageURL: packageURL,
             wallpaperID: directory.lastPathComponent,
             device: renderDevice.device,
             compileMaterials: compileMaterials
         )
+        // `--no-effects` renders the bare composition with every post-process pass removed.
+        // Separating the two halves is the only way to tell a scene that composites wrongly
+        // from one that composites correctly and is then ruined by an effect chain.
+        if arguments.contains("--no-effects") {
+            scene.sceneEffects = []
+            for index in scene.layers.indices { scene.layers[index].effects = [] }
+        }
 
         print("layers:     \(scene.layers.count)")
         if !scene.sceneEffects.isEmpty {

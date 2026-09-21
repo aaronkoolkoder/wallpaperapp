@@ -96,6 +96,10 @@ public final class DesktopSurface {
         }
     }
 
+    /// The window server's id for this surface, so a diagnostic can capture exactly this
+    /// window and nothing else on the user's screen.
+    public var windowNumber: Int { window.windowNumber }
+
     public func show() {
         window.orderFrontRegardless()
     }
