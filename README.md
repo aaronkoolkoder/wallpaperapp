@@ -94,9 +94,15 @@ Requires macOS 26 (Tahoe) on Apple Silicon.
 
 ## Using it
 
-Diorama shows a Dock icon while a window is open and drops to the menu bar when none is, so it
-stays out of the way while a wallpaper runs. The menu bar icon opens a panel with what is playing
-on each display; **Wallpaper → Wallpaper Library** (⌘L) opens the full browser.
+Diorama runs in the background: the wallpaper and a menu bar icon, with no Dock icon. The menu
+bar icon opens a panel with what is playing on each display, and from there Diorama's one window —
+the wallpaper library, with **Settings** as a second group in the same sidebar (⌘L and ⌘, open it
+at either). Closing the window leaves the wallpaper running.
+
+Turn on **Open Diorama at login** in Settings → General and it starts silently each time you log
+in, putting back the wallpaper that was on each display when it last quit. If the menu bar icon
+is out of reach — a crowded menu bar on a notched display hides some — open Diorama again from
+Finder or Spotlight and the window comes back.
 
 ## Build from source
 
