@@ -346,6 +346,19 @@ case "scene":
             scene.sceneEffects = []
             for index in scene.layers.indices { scene.layers[index].effects = [] }
         }
+        // `--only-effect <name>` keeps just the effects whose name contains `name`, so one
+        // effect's contribution can be measured against the bare composition. Attributing
+        // damage to the effect that caused it is otherwise guesswork in a scene with five.
+        if let flag = arguments.firstIndex(of: "--only-effect"), flag + 1 < arguments.count {
+            let wanted = arguments[flag + 1].lowercased()
+            func keep(_ effect: LayerEffect) -> Bool {
+                effect.debugName.lowercased().contains(wanted)
+            }
+            scene.sceneEffects = scene.sceneEffects.filter(keep)
+            for index in scene.layers.indices {
+                scene.layers[index].effects = scene.layers[index].effects.filter(keep)
+            }
+        }
 
         print("layers:     \(scene.layers.count)")
         if !scene.sceneEffects.isEmpty {
@@ -361,9 +374,12 @@ case "scene":
         print("clear:      \(scene.clearColor)")
         for layer in scene.layers {
             let texture = layer.texture.map { "\($0.width)x\($0.height)" } ?? "none"
+            let effects = layer.effects.isEmpty
+                ? ""
+                : " effects=[\(layer.effects.map(\.debugName).joined(separator: ","))]"
             print("  \(layer.name)  size=\(Int(layer.size.x))x\(Int(layer.size.y)) "
                   + "origin=(\(Int(layer.origin.x)),\(Int(layer.origin.y))) "
-                  + "blend=\(layer.blend) tex=\(texture)")
+                  + "blend=\(layer.blend) tex=\(texture)\(effects)")
         }
 
         let findings = scene.report.findings

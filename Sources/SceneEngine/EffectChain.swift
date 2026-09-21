@@ -13,8 +13,10 @@ public enum EffectInput: @unchecked Sendable {
     case chainInput
     /// A target written by an earlier pass of the same chain.
     case renderTarget(String)
-    /// A texture from the wallpaper's own assets, such as a noise or gradient lookup.
-    case texture(any MTLTexture)
+    /// A texture from the wallpaper's own assets, such as a noise or gradient lookup. Kept with
+    /// its image size, because a padded mask would otherwise report its allocation to
+    /// `g_TextureNResolution` and be sampled past its edge.
+    case texture(SceneTexture)
 }
 
 /// One pass of an effect, compiled.
@@ -22,8 +24,12 @@ public struct CompiledEffectPass: @unchecked Sendable {
     public var program: MaterialProgram
     /// Named target this pass writes, or nil for the chain's output.
     public var target: String?
-    /// Sampler slot to its source. Slots are the shader's declaration order, which is what a
-    /// `bind` entry's `index` refers to.
+    /// Texture index to its source, where index `N` is the sampler named `g_TextureN`.
+    ///
+    /// Not the shader's declaration order. A `bind` entry's `index` names the sampler by
+    /// number — `blur_combine.frag` annotates `g_Texture2` as `previous` and its pass binds
+    /// `previous` at index 2 — and the two part company as soon as a combo leaves a sampler
+    /// undeclared, which would shift every later binding onto the wrong texture.
     public var inputs: [Int: EffectInput]
     public var constants: [String: DynamicValue]
 }
@@ -32,6 +38,8 @@ public struct CompiledEffectPass: @unchecked Sendable {
 public struct CompiledEffect: @unchecked Sendable {
     public var name: String
     public var passes: [CompiledEffectPass]
+    /// Output-size divisor for each named target the effect declares; absent means full size.
+    public var targetScales: [String: Int] = [:]
 }
 
 /// One step of a layer's or scene's effect chain.
@@ -96,6 +104,12 @@ public final class EffectChainRunner {
     /// `g_ModelViewProjection` a layer's shader does, so there is nothing special to bind.
     public static let fullscreenTransform = simd_float4x4(diagonal: SIMD4(2, 2, 1, 1))
 
+    /// The `N` in a sampler named `g_TextureN`, which is what a `bind` index refers to.
+    static func textureIndex(of samplerName: String) -> Int? {
+        guard samplerName.hasPrefix("g_Texture") else { return nil }
+        return Int(samplerName.dropFirst("g_Texture".count))
+    }
+
     /// Runs `effect`, reading `source` and leaving the result in `destination`.
     ///
     /// Returns false when the chain could not run, so the caller can fall back rather than
@@ -122,10 +136,15 @@ public final class EffectChainRunner {
             // which is what lets the output allocation below notice that a pass reads the same
             // target it writes.
             var textures: [String: any MTLTexture] = [:]
-            for (slot, name) in pass.program.declaredSamplers.enumerated() {
+            var sizes: [String: SIMD4<Float>] = [:]
+            for (position, name) in pass.program.declaredSamplers.enumerated() {
+                // A sampler not called `g_TextureN` has no index to be bound by; its position
+                // is the only thing left to go on.
+                let slot = Self.textureIndex(of: name) ?? position
                 switch pass.inputs[slot] {
-                case .texture(let texture):
-                    textures[name] = texture
+                case .texture(let loaded):
+                    textures[name] = loaded.texture
+                    sizes[name] = loaded.resolution
                 case .renderTarget(let target):
                     // A target not yet written is the chain's own input. Wallpaper Engine
                     // supplies several such names itself (`_rt_FullFrameBuffer` and friends);
@@ -177,9 +196,10 @@ public final class EffectChainRunner {
                 } ?? false
 
                 let reusable = reads ? nil : existing
+                let scale = max(1, effect.targetScales[name] ?? 1)
                 guard let pooled = reusable ?? pool.acquire(
-                    width: destination.width,
-                    height: destination.height,
+                    width: max(1, destination.width / scale),
+                    height: max(1, destination.height / scale),
                     pixelFormat: destination.pixelFormat
                 ) else {
                     log.error("no target available for \(effect.name, privacy: .public)")
@@ -220,6 +240,7 @@ public final class EffectChainRunner {
                     projection: matrix_identity_float4x4,
                     textures: textures,
                     constants: pass.constants,
+                    textureSizes: sizes,
                     overrides: overrides,
                     engine: passEngine
                 ),
@@ -279,10 +300,12 @@ extension MaterialCompiler {
 
             var inputs: [Int: EffectInput] = [:]
             for binding in pass.bindings {
-                if binding.isRenderTarget {
+                if binding.isChainInput {
+                    inputs[binding.index] = .chainInput
+                } else if binding.isRenderTarget {
                     inputs[binding.index] = .renderTarget(binding.name)
-                } else if let texture = assets.texture(at: binding.name, device: device) {
-                    inputs[binding.index] = .texture(texture)
+                } else if let loaded = assets.sceneTexture(at: binding.name, device: device) {
+                    inputs[binding.index] = .texture(loaded)
                 } else {
                     report.add(
                         .degraded, feature: "Effect",
@@ -299,6 +322,13 @@ extension MaterialCompiler {
             ))
         }
 
-        return CompiledEffect(name: name, passes: compiled)
+        return CompiledEffect(
+            name: name,
+            passes: compiled,
+            targetScales: Dictionary(
+                document.framebuffers.map { ($0.name, $0.scale) },
+                uniquingKeysWith: { first, _ in first }
+            )
+        )
     }
 }
