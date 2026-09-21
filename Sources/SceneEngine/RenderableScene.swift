@@ -23,6 +23,17 @@ public struct RenderableLayer: @unchecked Sendable {
     public var texture: (any MTLTexture)?
     /// The UV the image ends at, which is 1 unless the texture was padded to a power of two.
     public var uvScale: SIMD2<Float> = SIMD2(1, 1)
+    /// Frames of an animated texture. The renderer points `texture` and `spriteFrame` at the
+    /// frame showing now.
+    public var sprite: SpriteAnimation?
+    public var spriteFrame: SpriteAnimation.Frame?
+
+    /// The part of the texture this layer shows: the current animation frame, or the image
+    /// inside a padded allocation.
+    public var uvRect: SIMD4<Float> {
+        if let spriteFrame { return spriteFrame.uvRect }
+        return SIMD4(0, 0, uvScale.x, uvScale.y)
+    }
     /// Parallax response.
     public var parallaxDepth: SIMD2<Float>
     /// Post-process chain applied to this layer alone, before it is composited.
@@ -432,8 +443,10 @@ public struct SceneBuilder {
            let material = assets.material(at: materialPath),
            let pass = material.firstPass {
             system.blend = Self.blendMode(named: pass.blending)
-            if let texturePath = pass.primaryTexture {
-                system.texture = assets.texture(at: texturePath, device: device)
+            if let texturePath = pass.primaryTexture,
+               let loaded = assets.sceneTexture(at: texturePath, device: device) {
+                system.texture = loaded.texture
+                system.sprite = loaded.sprite
             }
         }
 
@@ -513,6 +526,9 @@ public struct SceneBuilder {
         let size: SIMD2<Float>
         if let declared = object.size {
             size = SIMD2(Float(declared.x), Float(declared.y))
+        } else if let frameSize = loaded?.sprite?.frameSize {
+            // One frame of an animation, not the atlas holding all of them.
+            size = frameSize
         } else if let loaded {
             // The image, not the allocation: a padded texture would otherwise make a layer
             // measured in power-of-two pixels, roughly twice the size the author drew.
@@ -531,6 +547,18 @@ public struct SceneBuilder {
             pass, name: imagePath, assets: assets, device: device,
             primaryTexture: loaded, materials: materials, report: &report
         )
+
+        // A material that names a texture it cannot have is not a solid-colour layer, and
+        // drawing it through the built-in shader as one put a white rectangle over the
+        // wallpaper. The material's own shader, when it compiled, decides for itself what to
+        // draw without it. Why the texture is missing is already in the report.
+        if pass.primaryTexture != nil, loaded == nil, compiled == nil {
+            report.add(
+                .degraded, feature: "Layer",
+                detail: "\"\(object.name ?? imagePath)\" is hidden because its texture could not be loaded"
+            )
+            return nil
+        }
 
         var layer = RenderableLayer(
             name: object.name ?? imagePath,
@@ -558,6 +586,8 @@ public struct SceneBuilder {
         layer.materialRepeatingTextures = compiled?.repeating ?? []
         layer.materialConstants = pass.constantShaderValues
         layer.uvScale = loaded?.uvScale ?? SIMD2(1, 1)
+        layer.sprite = loaded?.sprite
+        layer.spriteFrame = loaded?.sprite?.frames.first
         layer.visibilityBinding = object.visible.flatMap { $0.isUserBound ? $0 : nil }
         return layer
     }
@@ -713,11 +743,17 @@ public struct SceneTexture {
     /// marked to tile — and noise is sampled far outside 0..1 on purpose, so one address mode
     /// for everything is wrong for someone.
     public let repeats: Bool
+    /// Frames, when the texture is an animation; `texture` is then its first page.
+    public let sprite: SpriteAnimation?
 
-    public init(texture: any MTLTexture, imageSize: SIMD2<Float>, repeats: Bool = false) {
+    public init(
+        texture: any MTLTexture, imageSize: SIMD2<Float>, repeats: Bool = false,
+        sprite: SpriteAnimation? = nil
+    ) {
         self.texture = texture
         self.imageSize = imageSize
         self.repeats = repeats
+        self.sprite = sprite
     }
 
     /// The whole allocation, padding included.

@@ -37,6 +37,9 @@ public final class ParticleSystem {
     /// Placement of the emitter in scene space, from the owning object.
     public var origin: SIMD3<Float> = .zero
     public var texture: (any MTLTexture)?
+    /// Frames of an animated sprite. Each particle plays them from its own birth, so a flock
+    /// flaps out of step rather than in unison.
+    public var sprite: SpriteAnimation?
     public var blend: BlendMode = .premultipliedAlpha
     public private(set) var findings: [CompatibilityFinding] = []
 
@@ -287,13 +290,15 @@ public final class ParticleSystem {
                     1
                 )
             )
+            let frame = sprite?.frame(at: particle.age)
             draws.append(
                 QuadDraw(
                     transform: matrix,
+                    uvRect: frame?.uvRect ?? SIMD4(0, 0, 1, 1),
                     tint: SIMD4(
                         particle.color.x, particle.color.y, particle.color.z, particle.alpha
                     ),
-                    texture: texture,
+                    texture: frame.flatMap { sprite?.texture(for: $0) } ?? texture,
                     blend: blend
                 )
             )

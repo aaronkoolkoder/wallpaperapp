@@ -168,7 +168,42 @@ public final class SceneAssets {
 
         do {
             let parsed = try TEXTexture(data: data)
+            for warning in parsed.warnings where warning.contains("TEXS") {
+                report.add(.degraded, feature: "Animated texture", detail: "\(path): \(warning)")
+            }
+
+            if let movie = parsed.videoData {
+                let still = try loader.makeVideoStill(movie, device: device, label: path)
+                report.add(
+                    .degraded, feature: "Video texture",
+                    detail: "\(path) is a video; its first frame is shown as a still"
+                )
+                let loaded = SceneTexture(
+                    texture: still,
+                    imageSize: SIMD2(Float(still.width), Float(still.height)),
+                    repeats: !parsed.flags.contains(.clampUVs)
+                )
+                textureCache[path] = loaded
+                return loaded
+            }
+
             let texture = try loader.makeTexture(from: parsed, device: device, label: path)
+
+            // The other pages of an animation spread over several images, and where each frame
+            // sits. A GIF-flagged texture with no readable frame table stays a plain texture.
+            var sprite: SpriteAnimation?
+            if let sheet = parsed.spriteSheet, !sheet.frames.isEmpty {
+                var pages = [texture]
+                for index in parsed.images.indices.dropFirst() {
+                    pages.append(
+                        try loader.makeTexture(
+                            from: parsed, image: index, device: device, label: "\(path)#\(index)"
+                        )
+                    )
+                }
+                sprite = SpriteAnimation(sheet: sheet, pages: pages)
+            }
+
             // An encoded texture decodes to exactly the image, so the header's image size can
             // exceed what was allocated; clamp rather than describe a region that is not there.
             let loaded = SceneTexture(
@@ -177,7 +212,8 @@ public final class SceneAssets {
                     Float(min(max(parsed.imageWidth, 1), texture.width)),
                     Float(min(max(parsed.imageHeight, 1), texture.height))
                 ),
-                repeats: !parsed.flags.contains(.clampUVs)
+                repeats: !parsed.flags.contains(.clampUVs),
+                sprite: sprite
             )
             textureCache[path] = loaded
             return loaded

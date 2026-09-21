@@ -1,3 +1,4 @@
+import AVFoundation
 import Accelerate
 import CoreGraphics
 import Foundation
@@ -111,7 +112,15 @@ public struct TextureLoader: Sendable {
         else {
             throw LoadError.undecodableImage(label ?? "texture")
         }
+        return try makeTexture(from: image, device: device, label: label)
+    }
 
+    /// Uploads a decoded image as straight-alpha BGRA.
+    private func makeTexture(
+        from image: CGImage,
+        device: any MTLDevice,
+        label: String?
+    ) throws -> any MTLTexture {
         let width = image.width
         let height = image.height
         guard width > 0, height > 0, width <= 16384, height <= 16384 else {
@@ -168,12 +177,48 @@ public struct TextureLoader: Sendable {
         return metalTexture
     }
 
-    public func makeTexture(
-        from texture: TEXTexture,
+    /// The first frame of a video texture, as a still.
+    ///
+    /// Wallpaper Engine plays these; drawing the first frame is a step short of that, and a long
+    /// way better than the white square the layer used to draw.
+    public func makeVideoStill(
+        _ movie: Data,
         device: any MTLDevice,
         label: String? = nil
     ) throws -> any MTLTexture {
-        guard let base = texture.mipmaps.first else { throw LoadError.noMipmaps }
+        // AVFoundation reads movies from URLs, so the MP4 goes to a temporary file for as long
+        // as it takes to decode one frame.
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("diorama-video-texture-\(UUID().uuidString).mp4")
+        try movie.write(to: file)
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        final class Still: @unchecked Sendable { var image: CGImage? }
+        let still = Still()
+        let done = DispatchSemaphore(value: 0)
+        let generator = AVAssetImageGenerator(asset: AVURLAsset(url: file))
+        generator.appliesPreferredTrackTransform = true
+        // The completion runs on AVFoundation's own queue, so waiting here cannot deadlock it.
+        generator.generateCGImageAsynchronously(for: .zero) { image, _, _ in
+            still.image = image
+            done.signal()
+        }
+        guard done.wait(timeout: .now() + 5) == .success, let image = still.image else {
+            throw LoadError.undecodableImage(label ?? "video texture")
+        }
+        return try makeTexture(from: image, device: device, label: label)
+    }
+
+    /// Uploads one image of the texture — the first unless an animation's page is asked for.
+    public func makeTexture(
+        from texture: TEXTexture,
+        image index: Int = 0,
+        device: any MTLDevice,
+        label: String? = nil
+    ) throws -> any MTLTexture {
+        guard texture.images.indices.contains(index) else { throw LoadError.noMipmaps }
+        let mipmaps = texture.images[index]
+        guard let base = mipmaps.first else { throw LoadError.noMipmaps }
 
         // A FreeImage-encoded texture holds a PNG or JPEG per level rather than pixels, and its
         // declared `format` describes what the pixels *will* be once decoded, not what is
@@ -200,10 +245,10 @@ public struct TextureLoader: Sendable {
             pixelFormat: pixelFormat,
             width: base.width,
             height: base.height,
-            mipmapped: texture.mipmaps.count > 1
+            mipmapped: mipmaps.count > 1
         )
         descriptor.usage = .shaderRead
-        descriptor.mipmapLevelCount = texture.mipmaps.count
+        descriptor.mipmapLevelCount = mipmaps.count
         // Managed rather than private: the data arrives on the CPU and is written once with
         // `replace`. A private texture would need a staging buffer and a blit for no benefit on
         // a unified-memory machine.
@@ -214,7 +259,7 @@ public struct TextureLoader: Sendable {
         }
         metalTexture.label = label
 
-        for (level, mip) in texture.mipmaps.enumerated() {
+        for (level, mip) in mipmaps.enumerated() {
             let region = MTLRegionMake2D(0, 0, mip.width, mip.height)
             let stride = Self.bytesPerRow(format: format, width: mip.width)
 

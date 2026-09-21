@@ -35,7 +35,22 @@ struct MaterialRenderPathTests {
     }
     """
 
-    private func makeWallpaper(fragment: String) throws -> URL {
+    /// A 4x4 RGBA `.tex` of one colour.
+    private static func solidTexture(_ r: UInt8, _ g: UInt8, _ b: UInt8) -> Data {
+        var data = Data()
+        func magic(_ text: String) { data.append(contentsOf: Array(text.utf8) + [0]) }
+        func int(_ value: Int32) { withUnsafeBytes(of: value.littleEndian) { data.append(contentsOf: $0) } }
+        magic("TEXV0005"); magic("TEXI0001")
+        int(0); int(2)                          // RGBA8888, clamp
+        int(4); int(4); int(4); int(4); int(0)
+        magic("TEXB0003"); int(1); int(-1)
+        int(1); int(4); int(4); int(0); int(64); int(64)
+        for _ in 0 ..< 16 { data.append(contentsOf: [r, g, b, 255]) }
+        return data
+    }
+
+    /// - Parameter texture: the layer's own texture; nil names one that is not there.
+    private func makeWallpaper(fragment: String, texture: Data? = nil) throws -> URL {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("DioramaRenderPath-\(UUID().uuidString)", isDirectory: true)
         let shaders = root.appendingPathComponent("shaders", isDirectory: true)
@@ -50,8 +65,11 @@ struct MaterialRenderPathTests {
             to: shaders.appendingPathComponent("marker.frag"), atomically: true, encoding: .utf8
         )
 
+        if let texture {
+            try texture.write(to: materials.appendingPathComponent("marker.tex"))
+        }
         let material = """
-        {"passes":[{"blending":"normal","shader":"marker","textures":["materials/none"]}]}
+        {"passes":[{"blending":"normal","shader":"marker","textures":["\(texture == nil ? "materials/none" : "materials/marker")"]}]}
         """
         try material.write(
             to: materials.appendingPathComponent("layer.json"), atomically: true, encoding: .utf8
@@ -110,15 +128,27 @@ struct MaterialRenderPathTests {
     @Test("A shader that will not compile falls back instead of dropping the layer")
     func brokenShaderFallsBack() throws {
         // A wallpaper missing one effect is still recognisably itself; a wallpaper missing a
-        // layer is not. The fallback draws the layer through the built-in shader, which with no
-        // texture means the white placeholder.
-        let root = try makeWallpaper(fragment: "void main() { notAFunction(); }")
+        // layer is not. The fallback draws the layer's own texture through the built-in shader.
+        let root = try makeWallpaper(
+            fragment: "void main() { notAFunction(); }", texture: Self.solidTexture(255, 0, 255)
+        )
         defer { try? FileManager.default.removeItem(at: root) }
 
         let pixel = try #require(try renderCentrePixel(root: root))
         #expect(pixel.r > 200)
-        #expect(pixel.g > 200)
+        #expect(pixel.g < 60)
         #expect(pixel.b > 200)
+    }
+
+    @Test("A layer with neither its shader nor its texture is hidden, not a white rectangle")
+    func nothingToDrawIsHidden() throws {
+        // Real content: a logo whose texture could not be read drew as an 800x800 white square
+        // over the middle of the wallpaper.
+        let root = try makeWallpaper(fragment: "void main() { notAFunction(); }")
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let pixel = try #require(try renderCentrePixel(root: root))
+        #expect(pixel.r < 60 && pixel.g < 60 && pixel.b < 60)
     }
 
     @Test("The failure is reported, not silently swallowed")
@@ -313,7 +343,9 @@ struct MaterialRenderPathTests {
         // The layer still draws through the built-in shader with its own textures, so the
         // wallpaper looks like itself, flatter. Reserving `unsupported` for "nothing renders"
         // is what keeps the word meaning something in a library-wide report.
-        let root = try makeWallpaper(fragment: "void main() { notAFunction(); }")
+        let root = try makeWallpaper(
+            fragment: "void main() { notAFunction(); }", texture: Self.solidTexture(255, 0, 255)
+        )
         defer { try? FileManager.default.removeItem(at: root) }
 
         let device = try #require(MTLCreateSystemDefaultDevice())

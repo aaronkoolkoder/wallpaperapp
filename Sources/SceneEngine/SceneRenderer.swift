@@ -148,6 +148,7 @@ public final class SceneRenderer {
         camera.update(deltaTime: clock.delta)
         let cameraOffset = camera.offset
         runScripts(scene: scene)
+        advanceSprites()
 
         guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else {
             lastOutcome = .noCommandBuffer
@@ -406,6 +407,17 @@ public final class SceneRenderer {
         }
     }
 
+    /// Point every animated layer at the frame showing now.
+    private func advanceSprites() {
+        let now = Float(clock.elapsed)
+        for index in workingLayers.indices {
+            guard let sprite = workingLayers[index].sprite else { continue }
+            let frame = sprite.frame(at: now)
+            workingLayers[index].spriteFrame = frame
+            workingLayers[index].texture = sprite.texture(for: frame)
+        }
+    }
+
     /// Fill `draws` with every visible layer and particle, in composition order.
     private func buildDraws(
         scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [SceneDraw]
@@ -432,7 +444,7 @@ public final class SceneRenderer {
                 // Stop at the edge of the image. A Wallpaper Engine texture is padded up to a
                 // power of two, so sampling the full 0..1 draws the empty margin as content and
                 // shrinks the picture into a corner of the surface.
-                uvRect: SIMD4(0, 0, layer.uvScale.x, layer.uvScale.y),
+                uvRect: layer.uvRect,
                 tint: layer.tint,
                 texture: layer.texture,
                 blend: layer.blend
@@ -675,6 +687,7 @@ extension SceneRenderer {
         } else if workingLayers.count != scene.layers.count {
             workingLayers = scene.layers
         }
+        advanceSprites()
 
         var camera = scene.cameraMotion
         camera.delay = 0
