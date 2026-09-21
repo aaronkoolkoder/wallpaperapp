@@ -14,7 +14,7 @@ jobs:
   dmg:
     runs-on: macos-26
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Check the toolchain can build for macOS 26
         # The runner image ships Xcode 26 as the default, so nothing needs selecting — but this
@@ -36,7 +36,7 @@ jobs:
           fi
 
       - name: Cache vendored shader toolchain
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             Vendor/install
@@ -68,14 +68,14 @@ jobs:
           codesign -v "$MOUNT/Diorama.app"
           hdiutil detach "$MOUNT" -quiet
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: Diorama-dmg
           path: dist/*.dmg
 
       - name: Publish release
         if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: dist/*.dmg
           generate_release_notes: true
