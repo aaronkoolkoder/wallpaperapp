@@ -97,3 +97,43 @@ struct ShaderMessageTextTests {
         #expect(ShaderMessageText.oneLine("\n\n") == "\n\n")
     }
 }
+
+/// Which filenames a texture reference is allowed to mean.
+@Suite("SceneAssets path variants")
+struct SceneAssetsPathVariantTests {
+
+    @Test("A dot inside an asset's name is part of the name, not an extension")
+    func dottedNameStillFindsItsTexture() {
+        // Real Workshop content: the layer's texture is stored as
+        // `materials/<name>.tex` where the name itself ends in `.com-4K-7.3257`. Reading the
+        // trailing `.3257` as a file extension meant that candidate was never generated, the
+        // texture was reported missing, and the layer drew as a flat white rectangle over the
+        // whole desktop.
+        let name = "satoru-gojo-hollow-purple-jujutsu-kaisen-uhdpaper.com-4K-7.3257"
+        let variants = SceneAssets.pathVariants(name)
+
+        #expect(variants.contains("materials/\(name).tex"), "the real file is never looked for")
+        #expect(variants.contains("\(name).tex"))
+    }
+
+    @Test("A reference that really does carry an extension still finds the built texture")
+    func extensionIsStillStripped() {
+        // A material naming `clouds.png` means the texture compiled from it, `clouds.tex`.
+        let variants = SceneAssets.pathVariants("clouds.png")
+        #expect(variants.contains("clouds.tex"))
+        #expect(variants.contains("materials/clouds.tex"))
+    }
+
+    @Test("An extensionless reference is unchanged in what it can mean")
+    func plainNameKeepsItsCandidates() {
+        let variants = SceneAssets.pathVariants("util/noise")
+        #expect(variants.contains("util/noise.tex"))
+        #expect(variants.contains("materials/util/noise.tex"))
+    }
+
+    @Test("No candidate is tried twice")
+    func variantsAreDistinct() {
+        let variants = SceneAssets.pathVariants("materials/thing")
+        #expect(Set(variants).count == variants.count)
+    }
+}

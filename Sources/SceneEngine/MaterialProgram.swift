@@ -209,7 +209,8 @@ public final class MaterialCompiler {
             named: fragmentShader.reflection.entryPoint, source: fragmentShader.msl, stage: "fragment"
         )
         descriptor.colorAttachments[0].pixelFormat = pixelFormat
-        SceneBuilder.blendMode(named: pass.blending).apply(to: descriptor.colorAttachments[0])
+        SceneBuilder.materialBlendMode(named: pass.blending)
+            .apply(to: descriptor.colorAttachments[0])
 
         // Metal shares one index space between vertex attribute buffers and constant buffers,
         // so the geometry has to go above whatever the shader's own uniform blocks took.

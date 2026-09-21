@@ -186,6 +186,25 @@ public struct SceneBuilder {
         }
     }
 
+    /// The same names, for a pipeline whose shader emits *straight* alpha.
+    ///
+    /// The built-in quad shader premultiplies before it returns, so it wants the premultiplied
+    /// factors. A wallpaper's own shader does not: `gl_FragColor = texSample2D(...)` hands back
+    /// exactly what was sampled, which is how Wallpaper Engine's shaders are written and why
+    /// its "normal" mode is a plain src-alpha blend. Giving that output `.one` for source RGB
+    /// counts the colour once at full strength and again through the destination term, so
+    /// anything drawn over a light background saturates — every material and every effect pass
+    /// was blowing out towards white.
+    static func materialBlendMode(named name: String?) -> BlendMode {
+        switch name?.lowercased() {
+        case "additive": .additive
+        case "multiply": .multiply
+        case "screen": .screen
+        case "normal", "translucent", .none: .alphaBlend
+        default: .alphaBlend
+        }
+    }
+
     /// Map an effect definition onto a built-in implementation.
     ///
     /// Only reached when the effect's own shaders could not be compiled — see `resolveEffects`,

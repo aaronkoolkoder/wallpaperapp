@@ -68,18 +68,29 @@ public final class SceneAssets {
 
     static func pathVariants(_ path: String) -> [String] {
         var variants: [String] = []
-        let hasExtension = (path as NSString).pathExtension.isEmpty == false
-        if !hasExtension {
-            variants.append(path + ".tex")
-            variants.append(path + ".json")
-        } else {
-            let stripped = (path as NSString).deletingPathExtension
-            variants.append(stripped + ".tex")
+        func add(_ candidate: String) {
+            guard !variants.contains(candidate) else { return }
+            variants.append(candidate)
         }
+
+        // A dot in a Wallpaper Engine asset name is part of the name. A texture called
+        // `...uhdpaper.com-4K-7.3257` is one file named exactly that, not a `.3257` file, so
+        // appending the extension has to be tried whether or not the last dot looks like one —
+        // otherwise a texture sitting in the package is reported missing and its layer draws as
+        // a flat white rectangle.
+        add(path + ".tex")
+        add(path + ".json")
+
+        // Still strip, for the paths that really do carry an extension: a material that names
+        // `foo.png` means the texture built from it, which is stored as `foo.tex`.
+        let stripped = (path as NSString).deletingPathExtension
+        if stripped != path { add(stripped + ".tex") }
+
         // Textures are addressed both bare and under `materials/` depending on the authoring tool.
         if !path.hasPrefix("materials/") {
-            variants.append("materials/" + path)
-            if !hasExtension { variants.append("materials/" + path + ".tex") }
+            add("materials/" + path)
+            add("materials/" + path + ".tex")
+            if stripped != path { add("materials/" + stripped + ".tex") }
         }
         return variants
     }

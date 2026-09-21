@@ -379,3 +379,32 @@ struct MaterialCompilerFactoryTests {
         #expect(first.compiledProgramCount == 0)
     }
 }
+
+/// Which blend factors a pipeline gets depends on what its shader emits.
+@Suite("Material blending")
+struct MaterialBlendModeTests {
+
+    @Test("A wallpaper's own shader blends as straight alpha, not premultiplied")
+    func materialsUseStraightAlpha() {
+        // The built-in quad shader premultiplies before returning, so it wants `.one` for
+        // source RGB. A transpiled Wallpaper Engine shader does not — `gl_FragColor =
+        // texSample2D(...)` returns exactly what was sampled. Giving that `.one` counts the
+        // colour at full strength *and* again through the destination term, so anything drawn
+        // over a light background saturates towards white.
+        #expect(SceneBuilder.materialBlendMode(named: "normal") == .alphaBlend)
+        #expect(SceneBuilder.materialBlendMode(named: "translucent") == .alphaBlend)
+        #expect(SceneBuilder.materialBlendMode(named: nil) == .alphaBlend)
+        #expect(SceneBuilder.materialBlendMode(named: "additive") == .additive)
+
+        // The built-in path is unchanged, and must stay premultiplied.
+        #expect(SceneBuilder.blendMode(named: "normal") == .premultipliedAlpha)
+        #expect(SceneBuilder.blendMode(named: "additive") == .premultipliedAdditive)
+    }
+
+    @Test("Straight-alpha blending weights the source by its own alpha")
+    func straightAlphaWeightsTheSource() {
+        let factors = BlendMode.alphaBlend.factors
+        #expect(factors?.sourceRGB == .sourceAlpha)
+        #expect(BlendMode.premultipliedAlpha.factors?.sourceRGB == .one)
+    }
+}
