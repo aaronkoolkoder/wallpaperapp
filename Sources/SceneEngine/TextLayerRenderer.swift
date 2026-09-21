@@ -21,25 +21,93 @@ struct TextLayerRenderer {
     /// text object is untrusted input like everything else here.
     private static let maximumDimension = 4096
 
+    /// Pixels per point of a text object's `pointsize`.
+    ///
+    /// Not documented anywhere; measured. Every text object Wallpaper Engine saves records the
+    /// box its text occupies, and across all 38 in a real library that box is the text set at
+    /// four pixels per point — a 5pt monospaced label 11 characters long is 132x20, a 32pt
+    /// "12:34" about 330x155, a 96pt one 1057x544 — whatever the scene's resolution. Drawn at
+    /// one pixel per point, text came out a quarter of the size it was authored at.
+    static let pixelsPerPoint: CGFloat = 4
+
     struct Result {
         let texture: any MTLTexture
         /// Pixel dimensions, so the layer can size its quad to the text's real aspect.
         let size: SIMD2<Float>
     }
 
+    /// Everything about a text object except the string, resolved once so a clock can redraw
+    /// every minute without looking its font up again.
+    struct Style: @unchecked Sendable {
+        let font: NSFont
+        let colour: NSColor
+        let alignment: NSTextAlignment
+        let outlineSize: CGFloat
+        let outlineColour: NSColor
+        /// Width of the box the editor saved around the text. Alignment is within this box —
+        /// 23 of the 38 text objects in a real library are left-aligned in a box wider than
+        /// their text, and centring the text instead pushed each line into its neighbour.
+        let boxWidth: CGFloat
+    }
+
+    /// Wallpaper Engine's names for the Windows fonts it lets authors pick without shipping
+    /// them, mapped to what a Mac has. `nil` means the system font.
+    static func systemFontSubstitute(for name: String) -> String? {
+        switch name.lowercased() {
+        case "arial": "Arial"
+        case "arialblack": "Arial Black"
+        case "timesnewroman": "Times New Roman"
+        case "couriernew": "Courier New"
+        case "verdana": "Verdana"
+        case "tahoma": "Tahoma"
+        case "trebuchetms", "trebuchet": "Trebuchet MS"
+        case "georgia": "Georgia"
+        case "impact": "Impact"
+        case "comicsansms", "comicsans": "Comic Sans MS"
+        default: nil
+        }
+    }
+
     /// Resolve the font a wallpaper asks for, falling back rather than failing.
     ///
-    /// Workshop wallpapers name Windows fonts that are simply not present on a Mac. Substituting
-    /// the system font keeps the layer readable and records the substitution, which is far more
-    /// useful than an empty rectangle where a label should be.
+    /// In order: a font file shipped inside the wallpaper, which is how most text in a real
+    /// library names its font (`fonts/VCR_OSD_MONO_1.001.ttf`); one of Wallpaper Engine's
+    /// `systemfont_` names; an installed font by name; and finally the system font, with the
+    /// substitution recorded — far more useful than an empty rectangle where a label should be.
     static func resolveFont(
-        named name: String?, size: CGFloat, findings: inout [CompatibilityFinding]
+        named name: String?, size: CGFloat, assets: SceneAssets? = nil,
+        findings: inout [CompatibilityFinding]
     ) -> NSFont {
         let fallback = NSFont.systemFont(ofSize: size, weight: .medium)
         guard let name, !name.isEmpty else { return fallback }
+        let normalized = name.replacingOccurrences(of: "\\", with: "/")
+
+        if let data = assets?.data(for: normalized),
+           let descriptors = CTFontManagerCreateFontDescriptorsFromData(data as CFData)
+               as? [CTFontDescriptor],
+           let descriptor = descriptors.first {
+            return CTFontCreateWithFontDescriptor(descriptor, size, nil) as NSFont
+        }
+
+        if normalized.lowercased().hasPrefix("systemfont_") {
+            let wanted = String(normalized.dropFirst("systemfont_".count))
+            if let family = systemFontSubstitute(for: wanted),
+               let font = NSFont(name: family, size: size) {
+                return font
+            }
+            let monospaced = ["consolas", "lucidaconsole", "couriernew"].contains(wanted.lowercased())
+            findings.append(
+                CompatibilityFinding(
+                    level: .degraded, feature: "Font",
+                    detail: "\(wanted) is a Windows font; using "
+                        + (monospaced ? "the system monospaced font" : "the system font")
+                )
+            )
+            return monospaced ? NSFont.monospacedSystemFont(ofSize: size, weight: .regular) : fallback
+        }
 
         // WE font references sometimes carry an extension or a path.
-        let cleaned = (name as NSString).deletingPathExtension
+        let cleaned = ((normalized as NSString).lastPathComponent as NSString).deletingPathExtension
         if let font = NSFont(name: cleaned, size: size) { return font }
 
         findings.append(
@@ -60,39 +128,60 @@ struct TextLayerRenderer {
         }
     }
 
-    func makeTexture(
-        for object: SceneObject,
-        device: any MTLDevice,
-        findings: inout [CompatibilityFinding]
-    ) -> Result? {
-        guard let string = object.text, !string.isEmpty else { return nil }
-
-        let pointSize = CGFloat(object.fontSize ?? 32)
-        guard pointSize > 0 else { return nil }
-        let font = Self.resolveFont(named: object.font, size: pointSize, findings: &findings)
-
+    func style(
+        for object: SceneObject, assets: SceneAssets?, findings: inout [CompatibilityFinding]
+    ) -> Style? {
+        let pointSize = CGFloat(object.fontSize ?? 32) * Self.pixelsPerPoint
+        guard pointSize > 0, pointSize.isFinite else { return nil }
         let colour = object.color ?? WEVector3(1, 1, 1)
-        let paragraph = NSMutableParagraphStyle()
-        paragraph.alignment = Self.alignment(object.horizontalAlign)
-
-        var attributes: [NSAttributedString.Key: Any] = [
-            .font: font,
-            .paragraphStyle: paragraph,
-            .foregroundColor: NSColor(
+        let outline = object.outlineColor ?? WEVector3(0, 0, 0)
+        return Style(
+            font: Self.resolveFont(
+                named: object.font, size: min(pointSize, CGFloat(Self.maximumDimension)),
+                assets: assets, findings: &findings
+            ),
+            colour: NSColor(
                 srgbRed: CGFloat(colour.x), green: CGFloat(colour.y),
                 blue: CGFloat(colour.z), alpha: 1
             ),
+            alignment: Self.alignment(object.horizontalAlign),
+            outlineSize: CGFloat(max(0, object.outlineSize ?? 0)),
+            outlineColour: NSColor(
+                srgbRed: CGFloat(outline.x), green: CGFloat(outline.y),
+                blue: CGFloat(outline.z), alpha: 1
+            ),
+            boxWidth: min(CGFloat(max(0, object.size?.x ?? 0)), CGFloat(Self.maximumDimension))
+        )
+    }
+
+    func makeTexture(
+        for object: SceneObject,
+        assets: SceneAssets? = nil,
+        device: any MTLDevice,
+        findings: inout [CompatibilityFinding]
+    ) -> Result? {
+        guard let string = object.text, !string.isEmpty,
+              let style = style(for: object, assets: assets, findings: &findings)
+        else { return nil }
+        return makeTexture(text: string, style: style, device: device)
+    }
+
+    func makeTexture(text string: String, style: Style, device: any MTLDevice) -> Result? {
+        guard !string.isEmpty else { return nil }
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = style.alignment
+
+        var attributes: [NSAttributedString.Key: Any] = [
+            .font: style.font,
+            .paragraphStyle: paragraph,
+            .foregroundColor: style.colour,
         ]
 
         // An outline is how text stays legible over arbitrary wallpaper artwork, so it is worth
         // honouring rather than dropping.
-        if let outlineSize = object.outlineSize, outlineSize > 0 {
-            let outline = object.outlineColor ?? WEVector3(0, 0, 0)
-            attributes[.strokeWidth] = -abs(outlineSize)
-            attributes[.strokeColor] = NSColor(
-                srgbRed: CGFloat(outline.x), green: CGFloat(outline.y),
-                blue: CGFloat(outline.z), alpha: 1
-            )
+        if style.outlineSize > 0 {
+            attributes[.strokeWidth] = -style.outlineSize
+            attributes[.strokeColor] = style.outlineColour
         }
 
         let attributed = NSAttributedString(string: string, attributes: attributes)
@@ -103,8 +192,9 @@ struct TextLayerRenderer {
             with: CGSize(width: CGFloat(Self.maximumDimension), height: .greatestFiniteMagnitude),
             options: [.usesLineFragmentOrigin, .usesFontLeading]
         )
-        let padding = max(4, (object.outlineSize.map { abs(CGFloat($0)) } ?? 0) * 2 + 4)
-        let width = min(Self.maximumDimension, Int(measured.width.rounded(.up) + padding * 2))
+        let padding = max(4, style.outlineSize * 2 + 4)
+        let textWidth = max(measured.width.rounded(.up), style.boxWidth)
+        let width = min(Self.maximumDimension, Int(textWidth + padding * 2))
         let height = min(Self.maximumDimension, Int(measured.height.rounded(.up) + padding * 2))
         guard width > 0, height > 0 else { return nil }
 

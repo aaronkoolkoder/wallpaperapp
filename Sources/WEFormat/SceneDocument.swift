@@ -276,13 +276,18 @@ public struct SceneObject: Sendable, Hashable, Codable {
     public var fontSize: Double?
     /// `left`, `center`, `right`.
     public var horizontalAlign: String?
+    /// `top`, `center`, `bottom`.
+    public var verticalAlign: String?
     /// Outline/shadow thickness, when the text declares one.
     public var outlineSize: Double?
     /// Outline colour, 0-1 components.
     public var outlineColor: WEVector3?
     /// SceneScript bodies keyed by the property they animate: `alpha`, `origin`, `angles`,
-    /// `scale`, `color`. Empty for the overwhelming majority of objects.
+    /// `scale`, `color`, `size`, `text`. Empty for the overwhelming majority of objects.
     public var scripts: [String: String]
+    /// The settings each script declares, as this wallpaper saved them, keyed like ``scripts``.
+    /// A clock's 24-hour switch and separator live here.
+    public var scriptProperties: [String: [String: DynamicValue]]
 
     public init(
         id: Int? = nil,
@@ -303,9 +308,11 @@ public struct SceneObject: Sendable, Hashable, Codable {
         material: String? = nil,
         effects: [SceneEffect] = [],
         scripts: [String: String] = [:],
+        scriptProperties: [String: [String: DynamicValue]] = [:],
         font: String? = nil,
         fontSize: Double? = nil,
         horizontalAlign: String? = nil,
+        verticalAlign: String? = nil,
         outlineSize: Double? = nil,
         outlineColor: WEVector3? = nil
     ) {
@@ -327,9 +334,11 @@ public struct SceneObject: Sendable, Hashable, Codable {
         self.material = material
         self.effects = effects
         self.scripts = scripts
+        self.scriptProperties = scriptProperties
         self.font = font
         self.fontSize = fontSize
         self.horizontalAlign = horizontalAlign
+        self.verticalAlign = verticalAlign
         self.outlineSize = outlineSize
         self.outlineColor = outlineColor
     }
@@ -351,13 +360,21 @@ public struct SceneObject: Sendable, Hashable, Codable {
         // Scripted properties are rare, so this scans a fixed short list rather than walking
         // every key on every object of every scene.
         var scripts: [String: String] = [:]
-        for property in ["alpha", "origin", "angles", "scale", "color", "size"] {
-            if let body = object.script(property) { scripts[property] = body }
+        var scriptProperties: [String: [String: DynamicValue]] = [:]
+        for property in ["alpha", "origin", "angles", "scale", "color", "size", "text"] {
+            guard let body = object.script(property) else { continue }
+            scripts[property] = body
+            let saved = object.scriptProperties(property)
+            if !saved.isEmpty { scriptProperties[property] = saved }
         }
         self.scripts = scripts
+        self.scriptProperties = scriptProperties
 
         font = object.string("font")
-        fontSize = object.double("fontsize") ?? object.double("size")
+        // `pointsize` is what every text object in a real 59-scene library uses. `size` is the
+        // text box, written as a vector, so it never read as a number anyway.
+        fontSize = object.double("pointsize") ?? object.double("fontsize")
+        verticalAlign = object.string("verticalalign")
         horizontalAlign = object.string("horizontalalign") ?? object.string("align")
         outlineSize = object.double("outlinesize")
         outlineColor = object.value(WEVector3.self, "outlinecolor")

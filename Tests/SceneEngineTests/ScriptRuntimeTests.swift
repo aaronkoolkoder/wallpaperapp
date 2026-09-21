@@ -72,13 +72,134 @@ struct ScriptRuntimeTests {
         #expect(runtime.evaluate(handle: handle, current: .number(0), deltaTime: 0.016, elapsed: 42) == .number(42))
     }
 
-    @Test("A non-numeric return is ignored rather than poisoning the property")
+    @Test("A string cannot poison a numeric property")
     func rejectsNonNumeric() throws {
+        // Strings are carried now — that is how a clock's text arrives — but applying one to
+        // alpha must leave alpha alone.
         let runtime = try #require(ScriptRuntime())
         let handle = try #require(runtime.compile(
             "export function update(v) { return 'hello'; }", name: "t"
         ))
-        #expect(runtime.evaluate(handle: handle, current: .number(1), deltaTime: 0, elapsed: 0) == nil)
+        let result = try #require(
+            runtime.evaluate(handle: handle, current: .number(1), deltaTime: 0, elapsed: 0)
+        )
+        #expect(result == .string("hello"))
+
+        var layer = RenderableLayer(
+            name: "t", origin: .zero, angles: .zero, scale: SIMD3(1, 1, 1),
+            size: SIMD2(1, 1), tint: SIMD4(1, 1, 1, 0.5), blend: .premultipliedAlpha,
+            texture: nil, parallaxDepth: .zero, isVisible: true
+        )
+        layer.applyScriptValue(result, to: "alpha")
+        #expect(layer.tint.w == 0.5)
+    }
+
+    // MARK: - What real scripts are written against
+
+    /// Wallpaper Engine's stock clock script, as 22 text layers in a real library carry it.
+    static let clockScript = """
+    'use strict';
+
+    export var scriptProperties = createScriptProperties()
+        .addCheckbox({ name: 'use24hFormat', label: 'ui_editor_properties_use_24h_format', value: true })
+        .addCheckbox({ name: 'showSeconds', label: 'ui_editor_properties_show_seconds', value: false })
+        .addText({ name: 'delimiter', label: 'ui_editor_properties_delimiter', value: ':' })
+        .finish();
+
+    export function update(value) {
+        let time = new Date();
+        var hours = time.getHours();
+        if (!scriptProperties.use24hFormat) {
+            hours %= 12;
+            if (hours == 0) { hours = 12; }
+        }
+        hours = ("00" + hours).slice(-2);
+        let minutes = ("00" + time.getMinutes()).slice(-2);
+        value = hours + scriptProperties.delimiter + minutes;
+        if (scriptProperties.showSeconds) {
+            let seconds = ("00" + time.getSeconds()).slice(-2);
+            value += scriptProperties.delimiter + seconds;
+        }
+        return value;
+    }
+    """
+
+    @Test("A clock script tells the time, with the settings the wallpaper saved")
+    func clock() throws {
+        let runtime = try #require(ScriptRuntime())
+        let handle = try #require(runtime.compile(
+            Self.clockScript, name: "Clock.text",
+            properties: ["delimiter": .string("."), "showSeconds": .bool(true)]
+        ))
+        guard case .string(let text)? = runtime.evaluate(
+            handle: handle, current: .string("12:34"), deltaTime: 0, elapsed: 0
+        ) else {
+            Issue.record("no text came back")
+            return
+        }
+        // hh.mm.ss — the saved delimiter and seconds, and the declared 24-hour default.
+        #expect(text.range(of: #"^\d\d\.\d\d\.\d\d$"#, options: .regularExpression) != nil, "got \(text)")
+    }
+
+    @Test("A script declaring a checkbox still compiles")
+    func checkboxDeclaration() throws {
+        // `addCheckbox` is the most used builder in real content, and was missing: the script
+        // threw before it defined `update`.
+        let runtime = try #require(ScriptRuntime())
+        let handle = try #require(runtime.compile("""
+        export var scriptProperties = createScriptProperties()
+            .addCheckbox({ name: 'on', value: true })
+            .addSlider({ name: 'gain', value: 3 })
+            .addCombo({ name: 'mode', value: 1, options: [] })
+            .finish();
+        export function update(value) { return scriptProperties.on ? value * scriptProperties.gain : 0; }
+        """, name: "t"))
+        #expect(runtime.evaluate(handle: handle, current: .number(2), deltaTime: 0, elapsed: 0) == .number(6))
+    }
+
+    @Test("Vectors arrive as Vec3 and a returned Vec3 comes back as a vector")
+    func vec3() throws {
+        let runtime = try #require(ScriptRuntime())
+        let handle = try #require(runtime.compile("""
+        export function update(value) {
+            return new Vec3(value.x + 1, value[1] + 2, value.z).add(new Vec3(0, 0, 3));
+        }
+        """, name: "t"))
+        let result = runtime.evaluate(
+            handle: handle, current: .vector3(SIMD3(1, 1, 1)), deltaTime: 0, elapsed: 0
+        )
+        #expect(result == .vector3(SIMD3(2, 3, 4)))
+    }
+
+    @Test("init runs once, before the first update")
+    func initRunsOnce() throws {
+        let runtime = try #require(ScriptRuntime())
+        let handle = try #require(runtime.compile("""
+        var calls = 0;
+        export function init(value) { calls += 1; return value + 10; }
+        export function update(value) { return value + calls * 100; }
+        """, name: "t"))
+        #expect(runtime.evaluate(handle: handle, current: .number(1), deltaTime: 0, elapsed: 0) == .number(111))
+        #expect(runtime.evaluate(handle: handle, current: .number(1), deltaTime: 0, elapsed: 0) == .number(101))
+    }
+
+    @Test("Two layers with the same name keep their own scripts")
+    func sameNameDistinctScripts() throws {
+        // Five clock layers all called "Clock" used to share one handle and all run the last.
+        let runtime = try #require(ScriptRuntime())
+        let first = try #require(runtime.compile("export function update(v) { return 1; }", name: "Clock.text"))
+        let second = try #require(runtime.compile("export function update(v) { return 2; }", name: "Clock.text"))
+        #expect(runtime.evaluate(handle: first, current: .number(0), deltaTime: 0, elapsed: 0) == .number(1))
+        #expect(runtime.evaluate(handle: second, current: .number(0), deltaTime: 0, elapsed: 0) == .number(2))
+    }
+
+    @Test("engine.runtime is the scene's elapsed time")
+    func engineRuntime() throws {
+        let runtime = try #require(ScriptRuntime())
+        let handle = try #require(runtime.compile(
+            "export function update(v) { return engine.runtime + WEMath.mix(0, 10, 0.5); }", name: "t"
+        ))
+        #expect(runtime.evaluate(handle: handle, current: .number(0), deltaTime: 0, elapsed: 7) == .number(12))
     }
 
     // MARK: - Security

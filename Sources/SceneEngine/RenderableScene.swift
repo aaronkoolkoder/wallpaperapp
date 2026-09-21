@@ -110,6 +110,8 @@ public struct RenderableScene: @unchecked Sendable {
     public var sceneEffects: [LayerEffect] = []
     /// Compiled SceneScript bindings, evaluated once per frame.
     public var scriptBindings: [ScriptBinding] = []
+    /// Text layers whose string comes from a script — clocks and dates.
+    public var textBindings: [TextBinding] = []
     /// Owns the JavaScript context. Nil when no object in the scene is scripted, which is the
     /// overwhelming majority — no interpreter is created for a scene that does not need one.
     public var scriptRuntime: ScriptRuntime?
@@ -194,6 +196,16 @@ public struct ScriptBinding: Sendable, Hashable {
         self.property = property
         self.handle = handle
     }
+}
+
+/// A text layer whose string a script writes, and how to draw it when the string changes.
+public struct TextBinding: @unchecked Sendable {
+    public let layerIndex: Int
+    /// Opaque handle into the script runtime.
+    public let handle: String
+    let style: TextLayerRenderer.Style
+    /// What the layer showed when the scene was built.
+    public let text: String
 }
 
 /// Builds a ``RenderableScene`` from a parsed scene document.
@@ -316,6 +328,7 @@ public struct SceneBuilder {
         var layers: [RenderableLayer] = []
         var systems: [ParticleSystem] = []
         var bindings: [ScriptBinding] = []
+        var textBindings: [TextBinding] = []
         var scriptRuntime: ScriptRuntime?
 
         let ortho = document.general?.orthogonalProjection
@@ -347,7 +360,10 @@ public struct SceneBuilder {
                             )
                             break
                         }
-                        if let handle = runtime.compile(body, name: "\(layer.name).\(property)") {
+                        if let handle = runtime.compile(
+                            body, name: "\(layer.name).\(property)",
+                            properties: object.scriptProperties[property] ?? [:]
+                        ) {
                             bindings.append(
                                 ScriptBinding(
                                     layerIndex: layerIndex, property: property, handle: handle
@@ -363,8 +379,12 @@ public struct SceneBuilder {
                     systems.append(system)
                 }
             case .text:
-                if let layer = buildTextLayer(object, device: device, report: &report) {
-                    layers.append(layer)
+                if let built = buildTextLayer(
+                    object, layerIndex: layers.count, assets: assets, device: device,
+                    runtime: &scriptRuntime, report: &report
+                ) {
+                    layers.append(built.layer)
+                    if let binding = built.binding { textBindings.append(binding) }
                 }
             case .sound:
                 // Silent by design; not a defect worth reporting.
@@ -408,6 +428,7 @@ public struct SceneBuilder {
             particles: systems,
             sceneEffects: sceneEffects,
             scriptBindings: bindings,
+            textBindings: textBindings,
             scriptRuntime: scriptRuntime,
             report: report
         )
@@ -457,20 +478,50 @@ public struct SceneBuilder {
 
     private func buildTextLayer(
         _ object: SceneObject,
+        layerIndex: Int,
+        assets: SceneAssets,
         device: any MTLDevice,
+        runtime: inout ScriptRuntime?,
         report: inout CompatibilityReport
-    ) -> RenderableLayer? {
+    ) -> (layer: RenderableLayer, binding: TextBinding?)? {
         var findings: [CompatibilityFinding] = []
-        guard let rendered = TextLayerRenderer().makeTexture(
-            for: object, device: device, findings: &findings
-        ) else {
+        let renderer = TextLayerRenderer()
+        defer { for finding in findings { report.add(finding) } }
+
+        guard let style = renderer.style(for: object, assets: assets, findings: &findings) else {
             report.add(
                 .degraded, feature: "Text layer",
                 detail: object.name.map { "\"\($0)\" could not be rendered" }
             )
             return nil
         }
-        for finding in findings { report.add(finding) }
+
+        // A scripted text layer — every clock and date in a real library — shows what its
+        // script says from the first frame, not the placeholder the editor saved beside it.
+        var text = object.text ?? ""
+        var binding: TextBinding?
+        if let body = object.scripts["text"] {
+            if runtime == nil { runtime = ScriptRuntime() }
+            if let runtime, let handle = runtime.compile(
+                body, name: "\(object.name ?? "Text").text",
+                properties: object.scriptProperties["text"] ?? [:]
+            ) {
+                if case .string(let first)? = runtime.evaluate(
+                    handle: handle, current: .string(text), deltaTime: 0, elapsed: 0
+                ) {
+                    text = first
+                }
+                binding = TextBinding(layerIndex: layerIndex, handle: handle, style: style, text: text)
+            }
+        }
+
+        guard let rendered = renderer.makeTexture(text: text, style: style, device: device) else {
+            report.add(
+                .degraded, feature: "Text layer",
+                detail: object.name.map { "\"\($0)\" could not be rendered" }
+            )
+            return nil
+        }
 
         let origin = object.origin ?? WEVector3(0, 0, 0)
         let angles = object.angles ?? WEVector3(0, 0, 0)
@@ -497,7 +548,7 @@ public struct SceneBuilder {
             isVisible: object.visible?.staticValue ?? true
         )
         layer.visibilityBinding = object.visible.flatMap { $0.isUserBound ? $0 : nil }
-        return layer
+        return (layer, binding)
     }
 
     private func buildImageLayer(

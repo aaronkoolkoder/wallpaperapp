@@ -47,6 +47,12 @@ public final class SceneRenderer {
 
     /// Scene time and camera state, advanced once per frame.
     public private(set) var clock = SceneClock()
+
+    /// What each scripted text layer shows now, keyed by layer index. Redrawn only when its
+    /// script's answer changes, and applied every frame so it survives `workingLayers` being
+    /// rebuilt from the scene.
+    private var textShown: [Int: (text: String, texture: any MTLTexture, size: SIMD2<Float>)] = [:]
+    private var nextTextUpdate: Float = 0
     private var camera = CameraMotion()
 
     /// Pointer position normalised to [-1, 1] about the screen centre. Set by the backend each
@@ -93,6 +99,8 @@ public final class SceneRenderer {
         self.scene = scene
         camera = scene.cameraMotion
         workingLayers = scene.layers
+        textShown = [:]
+        nextTextUpdate = 0
         clock.reset()
         log.info(
             "scene ready: \(scene.layers.count) layer(s), parallax \(scene.cameraMotion.isEnabled ? "on" : "off")"
@@ -148,6 +156,7 @@ public final class SceneRenderer {
         camera.update(deltaTime: clock.delta)
         let cameraOffset = camera.offset
         runScripts(scene: scene)
+        runTextScripts(scene: scene)
         advanceSprites()
 
         guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else {
@@ -404,6 +413,35 @@ public final class SceneRenderer {
                 elapsed: Double(clock.elapsed)
             ) else { continue }
             workingLayers[binding.layerIndex].applyScriptValue(result, to: binding.property)
+        }
+    }
+
+    /// Ask each scripted text layer what it says, and redraw the ones whose answer changed.
+    ///
+    /// Four times a second is often enough for a clock showing seconds, and a clock showing
+    /// minutes redraws once a minute — the rest of the time this is one short script call.
+    private func runTextScripts(scene: RenderableScene) {
+        guard let runtime = scene.scriptRuntime, !scene.textBindings.isEmpty else { return }
+        let now = clock.elapsed
+        if now >= nextTextUpdate {
+            nextTextUpdate = now + 0.25
+            for binding in scene.textBindings {
+                let current = textShown[binding.layerIndex]?.text ?? binding.text
+                guard case .string(let text)? = runtime.evaluate(
+                          handle: binding.handle, current: .string(current),
+                          deltaTime: Double(clock.delta), elapsed: Double(now)
+                      ),
+                      text != current,
+                      let drawn = TextLayerRenderer().makeTexture(
+                          text: text, style: binding.style, device: renderDevice.device
+                      )
+                else { continue }
+                textShown[binding.layerIndex] = (text, drawn.texture, drawn.size)
+            }
+        }
+        for (index, shown) in textShown where workingLayers.indices.contains(index) {
+            workingLayers[index].texture = shown.texture
+            workingLayers[index].size = shown.size
         }
     }
 
@@ -687,6 +725,7 @@ extension SceneRenderer {
         } else if workingLayers.count != scene.layers.count {
             workingLayers = scene.layers
         }
+        runTextScripts(scene: scene)
         advanceSprites()
 
         var camera = scene.cameraMotion

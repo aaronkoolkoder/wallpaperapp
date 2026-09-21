@@ -193,6 +193,17 @@ struct CaseInsensitiveContainer {
         return body
     }
 
+    /// The settings a script declares, as the wallpaper saved them — the object form's
+    /// `scriptproperties`. Entries that are not plain values are skipped rather than failing.
+    func scriptProperties(_ name: String) -> [String: DynamicValue] {
+        guard let key = keys[name.lowercased()],
+              let saved = objectForm(key)?.lenient(
+                  [String: Failable<DynamicValue>].self, AnyCodingKey("scriptproperties")
+              )
+        else { return [:] }
+        return saved.compactMapValues(\.value)
+    }
+
     func stringArray(_ name: String) -> [String]? {
         guard let key = keys[name.lowercased()] else { return nil }
         return container.lenientStringArray(key)
