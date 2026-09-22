@@ -63,6 +63,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences.suspendWhenOccluded = false
             preferences.suspendUnderFullscreenApps = false
             preferences.suspendInLowPowerMode = false
+            model.persistsPreferences = false
             coordinator.setPreferences(preferences)
             log.warning("DIORAMA_FORCE_RENDER is set; occlusion suspension disabled")
         }

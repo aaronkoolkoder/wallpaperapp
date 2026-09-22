@@ -128,6 +128,9 @@ public final class PowerPolicy {
            let percent = system.batteryPercent, percent <= preferences.batteryFloorPercent {
             return .suspended(reason: .batteryLow)
         }
+        if preferences.suspendOnBattery, !system.isOnACPower {
+            return .suspended(reason: .onBattery)
+        }
 
         // 6. Nobody can see this display's wallpaper. The single biggest win in the whole system
         //    — on a normal desktop with any window open, this is the branch that is taken.
@@ -136,6 +139,11 @@ public final class PowerPolicy {
         }
         if preferences.suspendUnderFullscreenApps, display.isCoveredByFullscreenApp {
             return .suspended(reason: .fullscreenApp)
+        }
+
+        // 6b. The user asked for the wallpaper to play only while the desktop is in front.
+        if preferences.suspendWhenAnotherAppIsActive, system.isAnotherAppActive {
+            return .suspended(reason: .anotherAppActive)
         }
 
         // 7. We are actually rendering. Pick a rate.

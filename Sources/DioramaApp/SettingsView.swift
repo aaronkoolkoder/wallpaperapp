@@ -125,9 +125,25 @@ struct PerformanceSettings: View {
                     isOn: $model.preferences.suspendUnderFullscreenApps
                 )
                 Toggle(
+                    "Stop when another app is in use",
+                    isOn: $model.preferences.suspendWhenAnotherAppIsActive
+                )
+                Toggle(
                     "Stop in Low Power Mode",
                     isOn: $model.preferences.suspendInLowPowerMode
                 )
+                Toggle(
+                    "Stop on battery",
+                    isOn: $model.preferences.suspendOnBattery
+                )
+                Picker(
+                    "Stop when battery is below",
+                    selection: $model.preferences.batteryFloorPercent
+                ) {
+                    Text("Never").tag(0)
+                    ForEach([10, 20, 30, 50], id: \.self) { Text("\($0)%").tag($0) }
+                }
+                .disabled(model.preferences.suspendOnBattery)
                 Toggle(
                     "Slow down when your Mac gets warm",
                     isOn: $model.preferences.respectThermalPressure
@@ -138,7 +154,9 @@ struct PerformanceSettings: View {
                 // This is the single biggest saving in the app, and turning it off is the
                 // fastest way to make Diorama expensive. Worth saying plainly.
                 Text("A covered wallpaper uses no energy at all. Leaving the first option on is "
-                     + "what keeps Diorama close to free when you are working.")
+                     + "what keeps Diorama close to free when you are working. \"Another app is "
+                     + "in use\" plays the wallpaper only while the desktop is in front — click "
+                     + "the desktop, or use Finder, and it carries on.")
                     .font(.caption)
             }
 

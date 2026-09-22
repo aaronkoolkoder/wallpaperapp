@@ -57,9 +57,14 @@ final class WallpaperSystemModel {
         didSet {
             guard preferences != oldValue else { return }
             coordinator.setPreferences(preferences)
+            if persistsPreferences { PowerPreferencesStorage.save(preferences) }
             refresh()
         }
     }
+
+    /// False while a diagnostic override is in force, so what it sets is never saved as though
+    /// the user had chosen it.
+    var persistsPreferences = true
 
     let library: LibraryStore
 
@@ -88,7 +93,11 @@ final class WallpaperSystemModel {
         self.coordinator = coordinator
         self.playback = playback
         self.library = library
-        self.preferences = coordinator.policy.preferences
+        // The energy settings as the user left them. They used to start from the defaults on
+        // every launch, so switching off "Stop under fullscreen apps" lasted until the next one.
+        let saved = PowerPreferencesStorage.load()
+        self.preferences = saved
+        coordinator.setPreferences(saved)
         self.audioReactivityEnabled = UserDefaults.standard.bool(forKey: "audioReactivity")
 
         audioCapture.onStatusChange = { [weak self] status in
@@ -255,5 +264,24 @@ final class WallpaperSystemModel {
         case .critical: "Your Mac is too warm — wallpapers paused"
         default: nil
         }
+    }
+}
+
+/// Where the energy settings live between launches: one JSON value in the app's preferences,
+/// decoded over the defaults so an option added later starts at its default instead of
+/// discarding everything the user had set.
+enum PowerPreferencesStorage {
+    static let key = "powerPreferences"
+
+    static func load(from defaults: UserDefaults = .standard) -> PowerPreferences {
+        guard let data = defaults.data(forKey: key),
+              let saved = try? JSONDecoder().decode(PowerPreferences.self, from: data)
+        else { return .default }
+        return saved
+    }
+
+    static func save(_ preferences: PowerPreferences, to defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(preferences) else { return }
+        defaults.set(data, forKey: key)
     }
 }

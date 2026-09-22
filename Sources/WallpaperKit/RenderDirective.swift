@@ -52,6 +52,10 @@ public enum SuspensionReason: String, Equatable, Sendable, CustomStringConvertib
     case batteryLow
     /// The user pressed pause.
     case userPaused
+    /// Another app is in front, and the user asked for the wallpaper to stop then.
+    case anotherAppActive
+    /// Running on battery, and the user asked for the wallpaper to stop then.
+    case onBattery
     /// No wallpaper is assigned to this display.
     case noContent
 
@@ -67,6 +71,8 @@ public enum SuspensionReason: String, Equatable, Sendable, CustomStringConvertib
         case .thermalCritical: "Mac is too warm"
         case .batteryLow: "Battery low"
         case .userPaused: "Paused"
+        case .anotherAppActive: "Another app is in use"
+        case .onBattery: "On battery"
         case .noContent: "No wallpaper set"
         }
     }

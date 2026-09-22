@@ -13,6 +13,8 @@ public struct SystemState: Equatable, Sendable {
     public var areDisplaysAsleep: Bool = false
     public var isScreenLocked: Bool = false
     public var isSessionActive: Bool = true
+    /// An app other than the desktop is in front. See ``SystemPowerMonitor/isAnotherApp(_:)``.
+    public var isAnotherAppActive: Bool = false
 
     public init() {}
 }
@@ -89,8 +91,27 @@ public final class SystemPowerMonitor {
             MainActor.assumeIsolated { self?.state.isScreenLocked = false }
         })
 
+        state.isAnotherAppActive = Self.isAnotherApp(NSWorkspace.shared.frontmostApplication)
+        observe(NSWorkspace.didActivateApplicationNotification, on: workspace) {
+            $0.state.isAnotherAppActive = Self.isAnotherApp(NSWorkspace.shared.frontmostApplication)
+        }
+
         startPowerSourceNotifications()
         log.info("monitor started: \(String(describing: self.state), privacy: .public)")
+    }
+
+    /// Whether `app` in front means someone is working in another app.
+    ///
+    /// Finder counts as the desktop: clicking the desktop makes it frontmost, and it is what is
+    /// in front when you are looking at your wallpaper. Diorama's own window counts too — you
+    /// are looking at wallpapers, not away from them.
+    nonisolated public static func isAnotherApp(_ bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else { return false }
+        return bundleIdentifier != "com.apple.finder" && bundleIdentifier != Bundle.main.bundleIdentifier
+    }
+
+    private static func isAnotherApp(_ app: NSRunningApplication?) -> Bool {
+        isAnotherApp(app?.bundleIdentifier)
     }
 
     public func stop() {

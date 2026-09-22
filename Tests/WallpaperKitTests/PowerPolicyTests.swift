@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import WallpaperKit
 
@@ -238,5 +239,70 @@ struct PowerPolicyTests {
         preferences.suspendWhenOccluded = false
         #expect(evaluate(system, display, preferences).isSuspended == false)
         _ = system
+    }
+
+    // MARK: - Choices the user makes in Settings
+
+    @Test("Another app in front stops the wallpaper only when the user asked for that")
+    func anotherAppActive() {
+        var (system, display) = healthy()
+        system.isAnotherAppActive = true
+        #expect(evaluate(system, display).isSuspended == false)
+
+        var preferences = PowerPreferences.default
+        preferences.suspendWhenAnotherAppIsActive = true
+        #expect(evaluate(system, display, preferences) == .suspended(reason: .anotherAppActive))
+
+        system.isAnotherAppActive = false
+        #expect(evaluate(system, display, preferences).isSuspended == false)
+    }
+
+    @Test("Covered still reads as covered when another app is also in front")
+    func occlusionOutranksAnotherApp() {
+        var (system, display) = healthy()
+        system.isAnotherAppActive = true
+        display.isOccluded = true
+        var preferences = PowerPreferences.default
+        preferences.suspendWhenAnotherAppIsActive = true
+        #expect(evaluate(system, display, preferences) == .suspended(reason: .occluded))
+    }
+
+    @Test("Battery stops the wallpaper only when asked, and only off wall power")
+    func stopOnBattery() {
+        var (system, display) = healthy()
+        var preferences = PowerPreferences.default
+        preferences.suspendOnBattery = true
+        #expect(evaluate(system, display, preferences).isSuspended == false)
+
+        system.isOnACPower = false
+        system.batteryPercent = 90
+        #expect(evaluate(system, display, preferences) == .suspended(reason: .onBattery))
+        #expect(evaluate(system, display).isSuspended == false)
+    }
+
+    @Test("Finder and nothing count as the desktop; any other app does not")
+    func whatCountsAsAnotherApp() {
+        #expect(SystemPowerMonitor.isAnotherApp("com.apple.finder") == false)
+        #expect(SystemPowerMonitor.isAnotherApp(nil) == false)
+        #expect(SystemPowerMonitor.isAnotherApp("com.apple.Safari"))
+        #expect(SystemPowerMonitor.isAnotherApp("com.microsoft.VSCode"))
+    }
+
+    @Test("Saved preferences round-trip, and an older save keeps its values for new options' defaults")
+    func preferencesCoding() throws {
+        var preferences = PowerPreferences.default
+        preferences.suspendUnderFullscreenApps = false
+        preferences.suspendWhenAnotherAppIsActive = true
+        preferences.frameRateOnAC = 60
+        let data = try JSONEncoder().encode(preferences)
+        #expect(try JSONDecoder().decode(PowerPreferences.self, from: data) == preferences)
+
+        // Written before the newer options existed.
+        let older = Data(#"{"frameRateOnAC": 60, "suspendUnderFullscreenApps": false}"#.utf8)
+        let decoded = try JSONDecoder().decode(PowerPreferences.self, from: older)
+        #expect(decoded.frameRateOnAC == 60)
+        #expect(decoded.suspendUnderFullscreenApps == false)
+        #expect(decoded.suspendWhenAnotherAppIsActive == PowerPreferences.default.suspendWhenAnotherAppIsActive)
+        #expect(decoded.frameRateOnBattery == PowerPreferences.default.frameRateOnBattery)
     }
 }

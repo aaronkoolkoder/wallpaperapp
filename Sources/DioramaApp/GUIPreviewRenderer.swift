@@ -19,10 +19,11 @@ import WallpaperKit
 /// "cannot render" placeholder. `.glassEffect()` renders nothing at all — it swallows its
 /// content rather than degrading. All four were found by probing, not by documentation.
 ///
-/// So this covers the menu bar popover, which is plain composition, and the About panel. The
-/// `Form`-based settings panels cannot be verified this way and still need a human to look at
-/// them. Pretending otherwise would be worse than the gap: a harness that reports success on a
-/// blank image is the same false confidence that let the effects pipeline diverge earlier.
+/// So `ImageRenderer` covers the menu bar popover, which is plain composition, and the About
+/// panel. `Form` panels go through `writeHosted` instead — an offscreen window and AppKit's own
+/// `cacheDisplay` — which draws them as a window would. Anything that still renders blank is
+/// reported and not written: a harness that reports success on a blank image is the same false
+/// confidence that let the effects pipeline diverge earlier.
 @MainActor
 enum GUIPreviewRenderer {
     static func renderAll(to directory: URL) {
@@ -87,13 +88,63 @@ enum GUIPreviewRenderer {
             to: directory.appendingPathComponent("inspector.png")
         )
 
-        // Only the About panel is plain composition; the Form-based panels render blank here
-        // and are deliberately not emitted rather than shipped as empty PNGs that look like
-        // passing output.
+        // The About panel is plain composition; Form panels are hosted, below.
         write(
             AboutView().frame(width: 520, height: 430),
             to: directory.appendingPathComponent("settings-about.png")
         )
+
+        // Form panels, through AppKit's own drawing instead of ImageRenderer.
+        writeHosted(
+            PerformanceSettings(model: model),
+            size: CGSize(width: 560, height: 1060),
+            to: directory.appendingPathComponent("settings-energy.png")
+        )
+    }
+
+    /// Draws `view` the way a window would, which covers what `ImageRenderer` cannot: a `Form`
+    /// is AppKit-backed, so it is hosted in an offscreen window and captured with
+    /// `cacheDisplay`. A capture that comes out one flat colour is reported and not written,
+    /// for the same reason the renderer above refuses blank output.
+    private static func writeHosted(_ view: some View, size: CGSize, to url: URL) {
+        let hosting = NSHostingView(
+            rootView: view
+                .environment(\.colorScheme, .dark)
+                .frame(width: size.width, height: size.height)
+        )
+        hosting.frame = CGRect(origin: .zero, size: size)
+        let window = NSWindow(
+            contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.appearance = NSAppearance(named: .darkAqua)
+        window.contentView = hosting
+        hosting.layoutSubtreeIfNeeded()
+        // One turn of the run loop lets the form's table views load their rows.
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        hosting.layoutSubtreeIfNeeded()
+
+        guard let bitmap = hosting.bitmapImageRepForCachingDisplay(in: hosting.bounds) else { return }
+        hosting.cacheDisplay(in: hosting.bounds, to: bitmap)
+        guard let image = bitmap.cgImage, !isFlat(bitmap) else {
+            FileHandle.standardError.write(Data("\(url.lastPathComponent) rendered blank; not written\n".utf8))
+            return
+        }
+        guard let destination = CGImageDestinationCreateWithURL(
+            url as CFURL, UTType.png.identifier as CFString, 1, nil
+        ) else { return }
+        CGImageDestinationAddImage(destination, image, nil)
+        CGImageDestinationFinalize(destination)
+        print("rendered \(url.lastPathComponent)")
+    }
+
+    private static func isFlat(_ bitmap: NSBitmapImageRep) -> Bool {
+        guard let first = bitmap.colorAt(x: 0, y: 0) else { return true }
+        for y in stride(from: 0, to: bitmap.pixelsHigh, by: 16) {
+            for x in stride(from: 0, to: bitmap.pixelsWide, by: 16) where bitmap.colorAt(x: x, y: y) != first {
+                return false
+            }
+        }
+        return true
     }
 
     private static func write(_ view: some View, to url: URL) {
