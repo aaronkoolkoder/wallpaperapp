@@ -18,6 +18,7 @@ import WebKit
 enum WebWallpaperBridge {
 
     /// Injected before any of the page's own scripts run.
+    @MainActor
     static func userScript(properties: [String: WEProperty], isMuted: Bool) -> WKUserScript {
         WKUserScript(
             source: hostAPI(properties: properties, isMuted: isMuted),

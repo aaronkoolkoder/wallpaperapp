@@ -622,7 +622,6 @@ public struct SceneBuilder {
             report.add(.degraded, feature: "Material", detail: "\(imagePath) declares no passes")
             return nil
         }
-        let material = resolved.material
 
         var loaded: SceneTexture?
         if let texturePath = pass.primaryTexture {
