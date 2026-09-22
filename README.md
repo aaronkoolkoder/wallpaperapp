@@ -9,12 +9,14 @@ network, and no code in the app that could make one.
 ## Status
 
 Early. Video, web, image **and Scene** wallpapers play — scenes render natively in Metal from
-their `.pkg`. Camera parallax, particle systems, post-processing chains (bloom, blur, vignette, chromatic
-aberration, sharpen, pixelate) and SceneScript all work. Text layers render, with font fallback when a
-wallpaper names a Windows font. Materials and effects run their own shaders, translated from
-GLSL to Metal at import; anything that will not translate falls back to a built-in approximation
-and is reported by name rather than silently flattened. See [PLAN.md](PLAN.md) for the full build plan,
-binary format specs, milestones, and licensing constraints.
+their `.pkg`. Camera parallax, particle systems, animated (GIF) textures, timeline animations,
+post-processing chains (bloom, blur, vignette, chromatic aberration, sharpen, pixelate, god rays)
+and SceneScript all work. Text layers render in the fonts the wallpaper ships with, and clocks
+tell the time. Materials and effects run their own shaders, translated from GLSL to Metal at
+import; anything that will not translate falls back to a built-in approximation and is reported
+by name rather than silently flattened. Web wallpapers run with the network blocked. See
+[PLAN.md](PLAN.md) for the full build plan, binary format specs, milestones, and licensing
+constraints.
 
 | Milestone | State |
 |---|---|
@@ -40,7 +42,8 @@ Against a real Steam Workshop library of 114 wallpapers — not synthetic fixtur
 | Indexed | 112 of 114 |
 | Playable | 73 |
 | Scenes that open and build layers | **59 of 59** |
-| Layers built across them | 236 |
+| Layers built across them | 273 |
+| Effects running the author's own shaders | 282 of 293 |
 | Scenes that fail to open | 0 |
 
 The 39 unplayable ones are honest failures, and the report says which: 36 have no content file
@@ -50,7 +53,10 @@ for other wallpapers, and one names a video that is not there.
 What is still missing is fidelity rather than loading. Materials name Wallpaper Engine's built-in
 shaders — `genericimage2` and includes like `common.h` — which ship with that application rather
 than inside wallpapers, so they fall back to a built-in approximation. Those have to be written
-from the interface rather than bundled; see [LEGAL.md](LEGAL.md).
+from the interface rather than bundled; see [LEGAL.md](LEGAL.md). The same goes for its stock
+particle sprites and Windows fonts, which get stand-ins. Several particle operators are not
+implemented yet (turbulence is approximated), and video textures show their first frame rather
+than playing. Every wallpaper's report lists what applies to it.
 
 Run it yourself:
 
@@ -61,6 +67,8 @@ swift run -c release wetool report /path/to/431960 --json baseline.json
 ## Measured performance
 
 M5 Pro, 3024×1964 Retina, on battery. Percent of **one** core.
+
+Benchmark scenes, each built to isolate one feature:
 
 | State | CPU |
 |---|---|
@@ -76,10 +84,17 @@ M5 Pro, 3024×1964 Retina, on battery. Percent of **one** core.
 Video misses its sub-1% target; the cause is understood and written up in PLAN.md §6.1 rather
 than glossed over.
 
+Real Workshop content costs more than the benchmarks. Playing each of the 59 scenes in the library
+above on the desktop in turn, with rendering forced on while the desktop was covered so it could
+be measured, took a median of **3.5%**, with 90% of scenes under **8.8%**. The most expensive
+scene, at **17.8%**, emits 15,000 particles a second, which are simulated on the CPU. The ten
+video wallpapers — 1080p up to 4K at 60fps and 1440p at 120fps — took **1–5%**.
+
 ## Install
 
-Grab the `.dmg` from [Releases](https://github.com/aaronkoolkoder/wallpaperapp/releases), open
-it, and drag **Diorama** into **Applications**.
+Download the `.dmg` from [Releases](https://github.com/aaronkoolkoder/wallpaperapp/releases), open
+it, and drag **Diorama** into **Applications** — or, before a release is published there, build it
+yourself (below).
 
 > **First launch: right-click the app and choose Open.**
 >
@@ -98,6 +113,9 @@ Diorama runs in the background: the wallpaper and a menu bar icon, with no Dock 
 bar icon opens a panel with what is playing on each display, and from there Diorama's one window —
 the wallpaper library, with **Settings** as a second group in the same sidebar (⌘L and ⌘, open it
 at either). Closing the window leaves the wallpaper running.
+
+Web wallpapers run with the network blocked, so a part that needs the internet — a music player,
+a web font — does not appear; the wallpaper's compatibility report names the sites it asked for.
 
 Turn on **Open Diorama at login** in Settings → General and it starts silently each time you log
 in, putting back the wallpaper that was on each display when it last quit. If the menu bar icon
