@@ -151,6 +151,11 @@ public final class EffectChainRunner {
     ///
     /// Returns false when the chain could not run, so the caller can fall back rather than
     /// leaving the destination undefined.
+    /// `DIORAMA_EFFECT_TRACE`, read once. `ProcessInfo.environment` copies the whole
+    /// environment into a new dictionary on every call, and this was asking once per pass per
+    /// frame — in an effect-heavy scene, the largest single cost on the render path.
+    private static let traceEnabled = ProcessInfo.processInfo.environment["DIORAMA_EFFECT_TRACE"] != nil
+
     @discardableResult
     public func run(
         _ effect: CompiledEffect,
@@ -201,7 +206,7 @@ public final class EffectChainRunner {
                 }
             }
 
-            if ProcessInfo.processInfo.environment["DIORAMA_EFFECT_TRACE"] != nil {
+            if Self.traceEnabled {
                 let bound = pass.program.declaredSamplers.enumerated().map { slot, name in
                     let texture = textures[name]
                     let what: String

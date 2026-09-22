@@ -194,37 +194,45 @@ public final class ParticleSystem {
         guard deltaTime > 0, !particles.isEmpty else { return }
         elapsed += deltaTime
 
-        // Age and integrate.
-        for index in particles.indices where particles[index].isAlive {
-            var particle = particles[index]
-            particle.age += deltaTime
-            if particle.age >= particle.lifetime {
-                particle.isAlive = false
-                particles[index] = particle
-                continue
-            }
+        // Exponential rather than linear so a large drag cannot reverse the velocity, which a
+        // naive `v -= v * drag * dt` does as soon as drag * dt exceeds 1. The same for every
+        // particle, so worked out once.
+        let dragFactor = drag > 0 ? exp(-drag * deltaTime) : 1
+        let gravityStep = gravity * deltaTime
+        let turbulenceStep = turbulenceSpeed * deltaTime
 
-            particle.velocity += gravity * deltaTime
-            if turbulenceSpeed > 0 {
-                particle.velocity += turbulence(at: particle.position) * turbulenceSpeed * deltaTime
-            }
-            if drag > 0 {
-                // Exponential rather than linear so a large drag cannot reverse the velocity,
-                // which a naive `v -= v * drag * dt` does as soon as drag * dt exceeds 1.
-                particle.velocity *= exp(-drag * deltaTime)
-            }
-            particle.position += particle.velocity * deltaTime
-            particle.rotation += particle.angularVelocity * deltaTime
+        // Age and integrate, through one buffer pointer: indexing the array property directly
+        // pays a runtime exclusivity check on every read and write, which on a busy emitter was
+        // a sizeable share of the frame.
+        particles.withUnsafeMutableBufferPointer { buffer in
+            for index in buffer.indices where buffer[index].isAlive {
+                var particle = buffer[index]
+                particle.age += deltaTime
+                if particle.age >= particle.lifetime {
+                    particle.isAlive = false
+                    buffer[index] = particle
+                    continue
+                }
 
-            let life = particle.age / max(0.0001, particle.lifetime)
-            if hasAlphaFade {
-                particle.alpha = particle.alphaInitial * fadeFactor(age: particle.age, lifetime: particle.lifetime)
-            }
-            if hasSizeChange {
-                particle.size = particle.sizeInitial * (1 + (sizeChangeScale - 1) * life)
-            }
+                particle.velocity += gravityStep
+                if turbulenceStep > 0 {
+                    particle.velocity += turbulence(at: particle.position) * turbulenceStep
+                }
+                particle.velocity *= dragFactor
+                particle.position += particle.velocity * deltaTime
+                particle.rotation += particle.angularVelocity * deltaTime
 
-            particles[index] = particle
+                if hasAlphaFade {
+                    particle.alpha = particle.alphaInitial
+                        * fadeFactor(age: particle.age, lifetime: particle.lifetime)
+                }
+                if hasSizeChange {
+                    let life = particle.age / max(0.0001, particle.lifetime)
+                    particle.size = particle.sizeInitial * (1 + (sizeChangeScale - 1) * life)
+                }
+
+                buffer[index] = particle
+            }
         }
 
         emit(deltaTime: deltaTime)
@@ -321,6 +329,34 @@ public final class ParticleSystem {
     }
 
     // MARK: - Drawing
+
+    /// Whether the whole system draws from one texture, and so through `appendInstances`. A
+    /// sprite sheet spread over several pages needs one per particle, and uses `appendDraws`.
+    public var drawsAsInstances: Bool { (sprite?.pages.count ?? 1) <= 1 }
+
+    /// The texture `appendInstances` draws with.
+    public var instanceTexture: (any MTLTexture)? { sprite?.pages.first ?? texture }
+
+    /// Every live particle, as the GPU draws it.
+    public func appendInstances(to instances: inout [ParticleInstance], cameraOffset: SIMD2<Float>) {
+        let sprite = self.sprite
+        particles.withUnsafeBufferPointer { buffer in
+            for particle in buffer where particle.isAlive {
+                instances.append(
+                    ParticleInstance(
+                        placement: SIMD4(
+                            particle.position.x + cameraOffset.x,
+                            particle.position.y + cameraOffset.y,
+                            particle.size,
+                            particle.rotation
+                        ),
+                        uvRect: sprite?.frame(at: particle.age).uvRect ?? SIMD4(0, 0, 1, 1),
+                        tint: SIMD4(particle.color, particle.alpha)
+                    )
+                )
+            }
+        }
+    }
 
     /// Append draws for every live particle.
     ///

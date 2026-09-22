@@ -242,4 +242,34 @@ struct ParticleSystemTests {
         #expect(zip(before, after).contains { simd_distance($0, $1) > 0.5 })
         #expect(system.findings.contains { $0.detail == "turbulence is approximated" })
     }
+
+    @Test("Instances place, size, turn and tint each particle as the per-quad draws did")
+    func instancesMatchDraws() throws {
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":40,
+         "emitter":[{"name":"sphererandom","rate":2000,"distancemax":100,"directions":"1 1 0"}],
+         "initializer":[{"name":"lifetimerandom","min":5,"max":5},{"name":"sizerandom","min":4,"max":12},
+                        {"name":"rotationrandom","min":0,"max":180},
+                        {"name":"colorrandom","min":"0 128 255","max":"255 128 0"}]}
+        """))
+        system.update(deltaTime: 0.1)
+
+        var draws: [QuadDraw] = []
+        system.appendDraws(to: &draws, cameraOffset: SIMD2(5, -3))
+        var instances: [ParticleInstance] = []
+        system.appendInstances(to: &instances, cameraOffset: SIMD2(5, -3))
+
+        #expect(instances.count == draws.count)
+        #expect(system.drawsAsInstances)
+        for (draw, instance) in zip(draws, instances) {
+            let p = instance.placement
+            let c = cosf(p.w), s = sinf(p.w)
+            #expect(abs(draw.transform.columns.3.x - p.x) < 0.001)
+            #expect(abs(draw.transform.columns.3.y - p.y) < 0.001)
+            #expect(abs(draw.transform.columns.0.x - c * p.z) < 0.001)
+            #expect(abs(draw.transform.columns.0.y - s * p.z) < 0.001)
+            #expect(draw.tint == instance.tint)
+            #expect(draw.uvRect == instance.uvRect)
+        }
+    }
 }

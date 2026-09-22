@@ -50,6 +50,7 @@ func usage() -> Never {
                                          is and whether it can still be reached
       wetool scene info <wallpaper-dir>  Describe a scene's layers
       wetool scene render <wallpaper-dir> <out.png> [WxH] [px,py] [--at seconds]
+      wetool scene bench <wallpaper-dir> [frames] [--size WxH]
                                          Render one frame offscreen; px,py is a
                                          normalised pointer in [-1,1] for parallax
     """)
@@ -427,11 +428,13 @@ case "scene":
         }
 
         if subcommand == "bench" {
-            // Renders the same scene repeatedly and reports CPU cost per frame. The absolute
-            // number includes an offscreen readback the live path does not do; what it is for
-            // is comparing two builds of the same scene, which is why `--no-shaders` exists.
-            let frames = arguments.count >= 4 ? (Int(arguments[3]) ?? 120) : 120
-            var benchWidth = 1920, benchHeight = 1080
+            // Renders the scene through the same per-frame path the desktop takes — time
+            // advancing at 30fps, animations, scripts and particles running — into an offscreen
+            // target, and reports the CPU the whole process spent, driver threads included.
+            // Needs no display, so it works on a locked Mac and in CI, and compares one build
+            // against another on the same scene.
+            let frames = arguments.count >= 4 ? (Int(arguments[3]) ?? 300) : 300
+            var benchWidth = 3024, benchHeight = 1964
             if let sizeIndex = arguments.firstIndex(of: "--size"), sizeIndex + 1 < arguments.count {
                 let parts = arguments[sizeIndex + 1].lowercased().split(separator: "x")
                 if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
@@ -441,45 +444,19 @@ case "scene":
 
             let renderer = try SceneRenderer(renderDevice: renderDevice)
             renderer.setScene(scene)
-
             // Warm up: the first frames pay for pipeline creation and texture residency.
-            for _ in 0 ..< 10 {
-                _ = renderer.renderOffscreen(width: benchWidth, height: benchHeight)
-            }
+            _ = renderer.benchmark(frames: 30, width: benchWidth, height: benchHeight)
+            guard let result = renderer.benchmark(
+                frames: frames, width: benchWidth, height: benchHeight
+            ) else { fail("the scene could not be rendered") }
 
-            var wallSamples: [Double] = []
-            var cpuSamples: [Double] = []
-            wallSamples.reserveCapacity(frames)
-            cpuSamples.reserveCapacity(frames)
-            for _ in 0 ..< frames {
-                // Thread CPU time, not wall time. The share of a core an idle wallpaper costs is
-                // the number PLAN.md §6 is about, and wall time here also counts waiting for the
-                // GPU — which is not CPU the user pays for.
-                let cpuStart = clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID)
-                let wallStart = ProcessInfo.processInfo.systemUptime
-                _ = renderer.renderOffscreen(width: benchWidth, height: benchHeight)
-                wallSamples.append((ProcessInfo.processInfo.systemUptime - wallStart) * 1000)
-                cpuSamples.append(Double(clock_gettime_nsec_np(CLOCK_THREAD_CPUTIME_ID) - cpuStart) / 1_000_000)
-            }
-
-            func summarize(_ samples: [Double]) -> (mean: Double, median: Double, p95: Double) {
-                let sorted = samples.sorted()
-                return (
-                    sorted.reduce(0, +) / Double(sorted.count),
-                    sorted[sorted.count / 2],
-                    sorted[min(sorted.count - 1, Int(Double(sorted.count) * 0.95))]
-                )
-            }
-            let wall = summarize(wallSamples)
-            let cpu = summarize(cpuSamples)
-
+            let perFrame = result.cpuSeconds / Double(frames) * 1000
             print()
             print(String(format: "frames:      %d at %dx%d", frames, benchWidth, benchHeight))
-            print(String(format: "wall:        %.3f ms median, %.3f p95", wall.median, wall.p95))
-            print(String(format: "cpu:         %.3f ms median, %.3f p95", cpu.median, cpu.p95))
-            // Includes an offscreen readback the live path does not do, so this is an upper
-            // bound rather than the figure a running wallpaper costs.
-            print(String(format: "at 30 fps:   %.2f%% of one core (upper bound)", cpu.median * 30 / 10))
+            print(String(format: "cpu:         %.3f ms per frame", perFrame))
+            print(String(format: "at 30 fps:   %.1f%% of one core", perFrame * 3))
+            print(String(format: "at 24 fps:   %.1f%% of one core", perFrame * 2.4))
+            print(String(format: "wall:        %.1f ms per frame", result.wallSeconds / Double(frames) * 1000))
             exit(0)
         }
 

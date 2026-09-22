@@ -80,6 +80,8 @@ public final class SceneRenderer {
 
     /// Reused per frame for the same reason: emitters produce thousands of quads.
     private var particleScratch: [QuadDraw] = []
+    /// Reused every frame, like the other scratch arrays: a busy emitter is tens of thousands.
+    private var particleInstances: [ParticleInstance] = []
 
     /// Layers as scripts have most recently left them. Refreshed from the scene when it is set,
     /// then mutated in place each frame so the scene itself stays immutable.
@@ -148,8 +150,24 @@ public final class SceneRenderer {
     public private(set) var lastOutcome: RenderOutcome = .noScene
 
     public func render(to layer: CAMetalLayer, timestamp: CFTimeInterval = CACurrentMediaTime()) {
-        guard let scene else { lastOutcome = .noScene; return }
+        guard scene != nil else { lastOutcome = .noScene; return }
         guard let drawable = layer.nextDrawable() else { lastOutcome = .noDrawable; return }
+        guard let buffer = encodeFrame(into: drawable.texture, timestamp: timestamp) else { return }
+
+        buffer.present(drawable)
+        buffer.commit()
+
+        pool.endFrame()
+        framesRendered &+= 1
+        lastOutcome = .rendered
+    }
+
+    /// Everything a desktop frame does short of presenting it: advance time, run the scene's
+    /// animations and scripts, and encode the composition into `target`.
+    private func encodeFrame(
+        into target: any MTLTexture, timestamp: CFTimeInterval
+    ) -> (any MTLCommandBuffer)? {
+        guard let scene else { lastOutcome = .noScene; return nil }
 
         clock.advance(to: timestamp)
         camera.setPointer(normalized: pointer)
@@ -162,20 +180,46 @@ public final class SceneRenderer {
 
         guard let buffer = renderDevice.makeFrameCommandBuffer(label: "scene") else {
             lastOutcome = .noCommandBuffer
-            return
+            return nil
         }
-        guard compose(scene: scene, cameraOffset: cameraOffset, into: drawable.texture, buffer: buffer)
-        else {
+        let composed = compose(scene: scene, cameraOffset: cameraOffset, into: target, buffer: buffer)
+        quads.finishFrame(on: buffer)
+        guard composed else {
             lastOutcome = .noEncoder
-            return
+            return nil
         }
+        return buffer
+    }
 
-        buffer.present(drawable)
-        buffer.commit()
+    /// Renders `frames` frames the way `render(to:)` does, into a texture of the given size
+    /// instead of the display, and reports the CPU the process spent.
+    ///
+    /// For measuring the render path where there is no display to render to — a locked or
+    /// sleeping Mac, or CI — and for comparing one build against another on the same scene.
+    public func benchmark(
+        frames: Int, width: Int, height: Int, frameInterval: CFTimeInterval = 1.0 / 30
+    ) -> (cpuSeconds: Double, wallSeconds: Double)? {
+        guard scene != nil, frames > 0 else { return nil }
+        let descriptor = MTLTextureDescriptor.texture2DDescriptor(
+            pixelFormat: .bgra8Unorm, width: width, height: height, mipmapped: false
+        )
+        descriptor.usage = [.renderTarget, .shaderRead]
+        descriptor.storageMode = .private
+        guard let target = renderDevice.device.makeTexture(descriptor: descriptor) else { return nil }
 
-        pool.endFrame()
-        framesRendered &+= 1
-        lastOutcome = .rendered
+        func processCPU() -> Double { Double(clock_gettime_nsec_np(CLOCK_PROCESS_CPUTIME_ID)) / 1e9 }
+        var timestamp = CACurrentMediaTime()
+        let cpuStart = processCPU(), wallStart = CACurrentMediaTime()
+        var last: (any MTLCommandBuffer)?
+        for _ in 0 ..< frames {
+            timestamp += frameInterval
+            guard let buffer = encodeFrame(into: target, timestamp: timestamp) else { return nil }
+            buffer.commit()
+            pool.endFrame()
+            last = buffer
+        }
+        last?.waitUntilCompleted()
+        return (processCPU() - cpuStart, CACurrentMediaTime() - wallStart)
     }
 
     /// Draws one frame of `scene` into `target`.
@@ -193,6 +237,7 @@ public final class SceneRenderer {
         into target: any MTLTexture,
         buffer: any MTLCommandBuffer
     ) -> Bool {
+        frameUniforms = makeEngineUniforms()
         let clear = MTLClearColor(
             red: Double(scene.clearColor.x),
             green: Double(scene.clearColor.y),
@@ -235,8 +280,44 @@ public final class SceneRenderer {
         }
         buildDraws(scene: scene, cameraOffset: cameraOffset, into: &drawScratch)
         encodeDraws(drawScratch, into: encoder, projection: projection, pixelFormat: target.pixelFormat)
+        encodeParticles(
+            scene, cameraOffset: cameraOffset, into: encoder,
+            projection: projection, pixelFormat: target.pixelFormat
+        )
         encoder.endEncoding()
         return true
+    }
+
+    /// Simulates and draws every particle system, after the layers.
+    ///
+    /// Particles always use the built-in shader: an emitter's material describes the sprite.
+    /// Each system is written straight into instance data and drawn in one call.
+    private func encodeParticles(
+        _ scene: RenderableScene,
+        cameraOffset: SIMD2<Float>,
+        into encoder: any MTLRenderCommandEncoder,
+        projection: simd_float4x4,
+        pixelFormat: MTLPixelFormat
+    ) {
+        for system in scene.particles {
+            system.update(deltaTime: clock.delta)
+            if system.drawsAsInstances {
+                particleInstances.removeAll(keepingCapacity: true)
+                system.appendInstances(to: &particleInstances, cameraOffset: cameraOffset)
+                particleInstances.withUnsafeBufferPointer { instances in
+                    quads.encodeParticles(
+                        instances, texture: system.instanceTexture, blend: system.blend,
+                        into: encoder, projection: projection, pixelFormat: pixelFormat
+                    )
+                }
+            } else {
+                particleScratch.removeAll(keepingCapacity: true)
+                system.appendDraws(to: &particleScratch, cameraOffset: cameraOffset)
+                quads.encode(
+                    particleScratch, into: encoder, projection: projection, pixelFormat: pixelFormat
+                )
+            }
+        }
     }
 
     /// Encodes draws in order, switching between the built-in shader and each material's own.
@@ -361,11 +442,24 @@ public final class SceneRenderer {
         }
     }
 
-    /// The values the app supplies to every shader this frame.
-    private func engineUniforms() -> EngineUniforms {
-        EngineUniforms(
+    /// The values the app supplies to every shader this frame, built once per frame in
+    /// `compose` — every material draw and effect used to build its own, each with a calendar
+    /// lookup and two freshly allocated spectrum arrays.
+    private var frameUniforms = EngineUniforms()
+    private func engineUniforms() -> EngineUniforms { frameUniforms }
+
+    /// Time of day changes once a second, and working it out means a calendar lookup.
+    private var dayTime: (second: Int, fraction: Float) = (-1, 0)
+
+    private func makeEngineUniforms() -> EngineUniforms {
+        let now = Date()
+        let second = Int(now.timeIntervalSinceReferenceDate)
+        if second != dayTime.second {
+            dayTime = (second, Self.dayTimeFraction(now: now))
+        }
+        return EngineUniforms(
             time: Float(clock.elapsed),
-            dayTime: Self.dayTimeFraction(),
+            dayTime: dayTime.fraction,
             pointerPosition: pointer,
             audioSpectrumLeft: Self.spectrum16(from: audio.left),
             audioSpectrumRight: Self.spectrum16(from: audio.right)
@@ -466,7 +560,7 @@ public final class SceneRenderer {
         }
     }
 
-    /// Fill `draws` with every visible layer and particle, in composition order.
+    /// Fill `draws` with every visible layer, in composition order.
     private func buildDraws(
         scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [SceneDraw]
     ) {
@@ -475,14 +569,7 @@ public final class SceneRenderer {
             draws.append(Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset))
         }
 
-        // Particles always use the built-in shader: an emitter's material describes the sprite,
-        // and the thousands of quads it produces are batched as one draw run.
-        particleScratch.removeAll(keepingCapacity: true)
-        for system in scene.particles {
-            system.update(deltaTime: clock.delta)
-            system.appendDraws(to: &particleScratch, cameraOffset: cameraOffset)
-        }
-        for quad in particleScratch { draws.append(SceneDraw(quad: quad, program: nil)) }
+        // Particles are drawn after these, by `encodeParticles`.
     }
 
     static func sceneDraw(for layer: RenderableLayer, cameraOffset: SIMD2<Float>) -> SceneDraw {
@@ -614,15 +701,19 @@ public final class SceneRenderer {
         if isFirstWrite { isFirstWrite = false }
 
         // Particles last, straight onto the accumulator.
-        var particleDraws: [QuadDraw] = []
-        for system in scene.particles {
-            system.update(deltaTime: clock.delta)
-            system.appendDraws(to: &particleDraws, cameraOffset: cameraOffset)
+        if !scene.particles.isEmpty {
+            let pass = MTLRenderPassDescriptor()
+            pass.colorAttachments[0].texture = accumulator.texture
+            pass.colorAttachments[0].loadAction = .load
+            pass.colorAttachments[0].storeAction = .store
+            if let encoder = buffer.makeRenderCommandEncoder(descriptor: pass) {
+                encodeParticles(
+                    scene, cameraOffset: cameraOffset, into: encoder,
+                    projection: projection, pixelFormat: accumulator.texture.pixelFormat
+                )
+                encoder.endEncoding()
+            }
         }
-        drawBatch(
-            particleDraws.map { SceneDraw(quad: $0, program: nil) },
-            into: accumulator.texture, clearFirst: false
-        )
 
         // Scene-wide chain straight into the target.
         applyEffectChain(
@@ -753,9 +844,11 @@ extension SceneRenderer {
         descriptor.storageMode = .shared
 
         guard let target = renderDevice.device.makeTexture(descriptor: descriptor),
-              let buffer = renderDevice.makeRetainedCommandBuffer(label: "offscreen"),
-              compose(scene: scene, cameraOffset: cameraOffset, into: target, buffer: buffer)
+              let buffer = renderDevice.makeRetainedCommandBuffer(label: "offscreen")
         else { return nil }
+        let composed = compose(scene: scene, cameraOffset: cameraOffset, into: target, buffer: buffer)
+        quads.finishFrame(on: buffer)
+        guard composed else { return nil }
 
         buffer.commit()
         buffer.waitUntilCompleted()

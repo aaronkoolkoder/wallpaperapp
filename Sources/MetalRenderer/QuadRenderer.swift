@@ -30,6 +30,23 @@ public struct QuadDraw {
     }
 }
 
+/// One particle as the GPU draws it: where, how big, turned how far, which part of the
+/// texture and in what colour. 48 bytes, written straight from the simulation — a particle
+/// emitter can be tens of thousands of these a frame, and building a `QuadDraw` apiece, each
+/// with its own matrix and a retained texture reference, cost more than simulating them.
+public struct ParticleInstance {
+    /// x, y, size, rotation (radians).
+    public var placement: SIMD4<Float>
+    public var uvRect: SIMD4<Float>
+    public var tint: SIMD4<Float>
+
+    public init(placement: SIMD4<Float>, uvRect: SIMD4<Float>, tint: SIMD4<Float>) {
+        self.placement = placement
+        self.uvRect = uvRect
+        self.tint = tint
+    }
+}
+
 /// Draws textured quads. The bulk of a 2D scene is this and nothing else.
 ///
 /// Threading: render-queue only, like everything else in this module.
@@ -41,9 +58,22 @@ public final class QuadRenderer {
     }
 
     private struct PipelineKey: Hashable {
+        enum Kind: Hashable { case single, instanced, particles }
         let blend: BlendMode
         let pixelFormat: MTLPixelFormat
+        let kind: Kind
     }
+
+    /// Consecutive draws sharing a texture and blend mode are drawn as one instanced draw.
+    /// A particle emitter is thousands of them, and one draw call apiece was the largest cost
+    /// on the render path in a real library: 20,000 particles meant 20,000 calls a frame, each
+    /// paying the driver to re-validate the same state.
+    private static let minimumBatch = 4
+
+    /// Per-instance storage for batched draws. Frame command buffers do not retain their
+    /// resources, so a buffer written this frame is kept until the GPU has finished with it,
+    /// then handed back for reuse.
+    private let instanceBuffers = InstanceBufferPool()
 
     private let device: any MTLDevice
     private let library: any MTLLibrary
@@ -115,14 +145,33 @@ public final class QuadRenderer {
         guard !draws.isEmpty else { return }
         encoder.setFragmentSamplerState(wrapsUVs ? samplerRepeat : samplerClamp, index: 0)
 
-        var lastBlend: BlendMode?
-        for draw in draws {
-            if lastBlend != draw.blend {
-                guard let pipeline = pipeline(for: draw.blend, pixelFormat: pixelFormat) else {
+        var lastPipeline: PipelineKey?
+        var index = draws.startIndex
+        while index < draws.endIndex {
+            let draw = draws[index]
+
+            // How many draws from here share this one's texture and blend.
+            var end = index + 1
+            while end < draws.endIndex, draws[end].blend == draw.blend,
+                  draws[end].texture === draw.texture {
+                end += 1
+            }
+
+            if end - index >= Self.minimumBatch,
+               encodeBatch(draws[index ..< end], into: encoder, projection: projection,
+                           pixelFormat: pixelFormat, lastPipeline: &lastPipeline) {
+                index = end
+                continue
+            }
+
+            let key = PipelineKey(blend: draw.blend, pixelFormat: pixelFormat, kind: .single)
+            if lastPipeline != key {
+                guard let pipeline = pipeline(for: key) else {
+                    index += 1
                     continue
                 }
                 encoder.setRenderPipelineState(pipeline)
-                lastBlend = draw.blend
+                lastPipeline = key
             }
 
             var uniforms = Uniforms(
@@ -143,30 +192,112 @@ public final class QuadRenderer {
             }
 
             encoder.drawPrimitives(type: .triangleStrip, vertexStart: 0, vertexCount: 4)
+            index += 1
         }
+    }
+
+    /// Draws a run of quads that share a texture and blend mode in one call.
+    ///
+    /// - Returns: false when no instance storage could be had, so the caller draws them one
+    ///   at a time instead.
+    private func encodeBatch(
+        _ run: ArraySlice<QuadDraw>,
+        into encoder: any MTLRenderCommandEncoder,
+        projection: simd_float4x4,
+        pixelFormat: MTLPixelFormat,
+        lastPipeline: inout PipelineKey?
+    ) -> Bool {
+        guard let first = run.first else { return true }
+        let key = PipelineKey(blend: first.blend, pixelFormat: pixelFormat, kind: .instanced)
+        guard let pipeline = pipeline(for: key),
+              let slot = instanceBuffers.allocate(
+                  bytes: run.count * MemoryLayout<Uniforms>.stride, device: device
+              )
+        else { return false }
+
+        let instances = (slot.buffer.contents() + slot.offset)
+            .bindMemory(to: Uniforms.self, capacity: run.count)
+        for (offset, draw) in run.enumerated() {
+            instances[offset] = Uniforms(
+                mvp: projection * draw.transform, uvRect: draw.uvRect, tint: draw.tint
+            )
+        }
+
+        if lastPipeline != key {
+            encoder.setRenderPipelineState(pipeline)
+            lastPipeline = key
+        }
+        encoder.setVertexBuffer(slot.buffer, offset: slot.offset, index: 1)
+        if let texture = first.texture {
+            encoder.setFragmentTexture(texture, index: 0)
+        } else {
+            encoder.setFragmentTexture(fallbackTexture, index: 0)
+            missingTextureDraws += run.count
+        }
+        encoder.drawPrimitives(
+            type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: run.count
+        )
+        return true
+    }
+
+    /// Draws a particle system's instances in one call.
+    public func encodeParticles(
+        _ instances: UnsafeBufferPointer<ParticleInstance>,
+        texture: (any MTLTexture)?,
+        blend: BlendMode,
+        into encoder: any MTLRenderCommandEncoder,
+        projection: simd_float4x4,
+        pixelFormat: MTLPixelFormat = .bgra8Unorm
+    ) {
+        guard let base = instances.baseAddress, !instances.isEmpty else { return }
+        let key = PipelineKey(blend: blend, pixelFormat: pixelFormat, kind: .particles)
+        let bytes = instances.count * MemoryLayout<ParticleInstance>.stride
+        guard let pipeline = pipeline(for: key),
+              let slot = instanceBuffers.allocate(bytes: bytes, device: device)
+        else { return }
+        (slot.buffer.contents() + slot.offset).copyMemory(from: base, byteCount: bytes)
+
+        encoder.setRenderPipelineState(pipeline)
+        encoder.setFragmentSamplerState(samplerClamp, index: 0)
+        var projection = projection
+        encoder.setVertexBytes(&projection, length: MemoryLayout<simd_float4x4>.stride, index: 0)
+        encoder.setVertexBuffer(slot.buffer, offset: slot.offset, index: 1)
+        encoder.setFragmentTexture(texture ?? fallbackTexture, index: 0)
+        if texture == nil { missingTextureDraws += instances.count }
+        encoder.drawPrimitives(
+            type: .triangleStrip, vertexStart: 0, vertexCount: 4, instanceCount: instances.count
+        )
+    }
+
+    /// Hands this frame's instance storage back once `commandBuffer` has run. Call once per
+    /// frame, after encoding and before committing.
+    public func finishFrame(on commandBuffer: any MTLCommandBuffer) {
+        instanceBuffers.finishFrame(on: commandBuffer)
     }
 
     public func resetCounters() { missingTextureDraws = 0 }
 
-    private func pipeline(
-        for blend: BlendMode, pixelFormat: MTLPixelFormat
-    ) -> (any MTLRenderPipelineState)? {
-        let key = PipelineKey(blend: blend, pixelFormat: pixelFormat)
+    private func pipeline(for key: PipelineKey) -> (any MTLRenderPipelineState)? {
         if let existing = pipelines[key] { return existing }
 
         let descriptor = MTLRenderPipelineDescriptor()
-        descriptor.label = "quad-\(blend)"
-        descriptor.vertexFunction = library.makeFunction(name: "quad_vertex")
-        descriptor.fragmentFunction = library.makeFunction(name: "quad_fragment")
-        descriptor.colorAttachments[0].pixelFormat = pixelFormat
-        blend.apply(to: descriptor.colorAttachments[0])
+        let (vertex, fragment) = switch key.kind {
+        case .single: ("quad_vertex", "quad_fragment")
+        case .instanced: ("quad_vertex_instanced", "quad_fragment_instanced")
+        case .particles: ("particle_vertex", "quad_fragment_instanced")
+        }
+        descriptor.label = "quad-\(key.blend)-\(key.kind)"
+        descriptor.vertexFunction = library.makeFunction(name: vertex)
+        descriptor.fragmentFunction = library.makeFunction(name: fragment)
+        descriptor.colorAttachments[0].pixelFormat = key.pixelFormat
+        key.blend.apply(to: descriptor.colorAttachments[0])
 
         do {
             let state = try device.makeRenderPipelineState(descriptor: descriptor)
             pipelines[key] = state
             return state
         } catch {
-            log.error("pipeline for \(String(describing: blend)) failed: \(error.localizedDescription, privacy: .public)")
+            log.error("pipeline for \(String(describing: key.blend)) failed: \(error.localizedDescription, privacy: .public)")
             return nil
         }
     }
@@ -207,6 +338,71 @@ public final class QuadRenderer {
         return out;
     }
 
+    struct InstancedOut {
+        float4 position [[position]];
+        float2 uv;
+        float4 tint;
+    };
+
+    // The same quad, with its uniforms read per instance: one call draws a whole run.
+    vertex InstancedOut quad_vertex_instanced(uint vid [[vertex_id]],
+                                              uint iid [[instance_id]],
+                                              const device Uniforms *instances [[buffer(1)]]) {
+        float2 corners[4] = {
+            float2(-0.5, -0.5), float2(0.5, -0.5),
+            float2(-0.5,  0.5), float2(0.5,  0.5)
+        };
+        float2 uvs[4] = {
+            float2(0.0, 1.0), float2(1.0, 1.0),
+            float2(0.0, 0.0), float2(1.0, 0.0)
+        };
+        Uniforms u = instances[iid];
+        InstancedOut out;
+        out.position = u.mvp * float4(corners[vid], 0.0, 1.0);
+        out.uv = mix(u.uvRect.xy, u.uvRect.zw, uvs[vid]);
+        out.tint = u.tint;
+        return out;
+    }
+
+    struct Particle {
+        float4 placement;   // x, y, size, rotation
+        float4 uvRect;
+        float4 tint;
+    };
+
+    // A particle's quad is built here from its placement, so the CPU writes 48 bytes and no
+    // matrix, and the rotation's sine and cosine are the GPU's to take.
+    vertex InstancedOut particle_vertex(uint vid [[vertex_id]],
+                                        uint iid [[instance_id]],
+                                        constant float4x4 &projection [[buffer(0)]],
+                                        const device Particle *particles [[buffer(1)]]) {
+        float2 corners[4] = {
+            float2(-0.5, -0.5), float2(0.5, -0.5),
+            float2(-0.5,  0.5), float2(0.5,  0.5)
+        };
+        float2 uvs[4] = {
+            float2(0.0, 1.0), float2(1.0, 1.0),
+            float2(0.0, 0.0), float2(1.0, 0.0)
+        };
+        Particle p = particles[iid];
+        float c = cos(p.placement.w), s = sin(p.placement.w);
+        float2 corner = corners[vid] * p.placement.z;
+        float2 turned = float2(c * corner.x - s * corner.y, s * corner.x + c * corner.y);
+        InstancedOut out;
+        out.position = projection * float4(p.placement.xy + turned, 0.0, 1.0);
+        out.uv = mix(p.uvRect.xy, p.uvRect.zw, uvs[vid]);
+        out.tint = p.tint;
+        return out;
+    }
+
+    fragment float4 quad_fragment_instanced(InstancedOut in [[stage_in]],
+                                            texture2d<float> tex [[texture(0)]],
+                                            sampler samp [[sampler(0)]]) {
+        float4 color = tex.sample(samp, in.uv) * in.tint;
+        color.rgb *= color.a;
+        return color;
+    }
+
     fragment float4 quad_fragment(VertexOut in [[stage_in]],
                                   constant Uniforms &u [[buffer(0)]],
                                   texture2d<float> tex [[texture(0)]],
@@ -236,5 +432,68 @@ public enum RendererError: Error, LocalizedError {
         case .textureCreationFailed: "Could not allocate a texture"
         case .libraryCompilationFailed(let detail): "Shader compilation failed: \(detail)"
         }
+    }
+}
+
+/// Reusable storage for instanced draws, handed back once the GPU is done with it.
+///
+/// One frame's instances are packed into as few buffers as fit; a buffer goes back to the free
+/// list from the completion handler of the command buffer that read it. Completion handlers run
+/// on Metal's own thread, hence the lock.
+final class InstanceBufferPool: @unchecked Sendable {
+    struct Slot {
+        let buffer: any MTLBuffer
+        let offset: Int
+    }
+
+    /// Instance data is read by `instance_id`, so a run's start only needs the struct's own
+    /// alignment; 256 is what Metal requires of a buffer offset on every GPU.
+    private static let alignment = 256
+    private static let minimumBufferSize = 256 * 1024
+
+    private let lock = OSAllocatedUnfairLock<[any MTLBuffer]>(uncheckedState: [])
+    private var inUse: [any MTLBuffer] = []
+    private var current: (buffer: any MTLBuffer, used: Int)?
+
+    func allocate(bytes: Int, device: any MTLDevice) -> Slot? {
+        if let current, current.used + bytes <= current.buffer.length {
+            let slot = Slot(buffer: current.buffer, offset: current.used)
+            self.current = (current.buffer, Self.aligned(current.used + bytes))
+            return slot
+        }
+        let reused = lock.withLockUnchecked { free -> (any MTLBuffer)? in
+            guard let index = free.firstIndex(where: { $0.length >= bytes }) else { return nil }
+            return free.remove(at: index)
+        }
+        guard let buffer = reused ?? device.makeBuffer(
+            length: max(Self.minimumBufferSize, Self.aligned(bytes)),
+            options: [.storageModeShared, .cpuCacheModeWriteCombined]
+        ) else { return nil }
+        buffer.label = "quad-instances"
+        inUse.append(buffer)
+        current = (buffer, Self.aligned(bytes))
+        return Slot(buffer: buffer, offset: 0)
+    }
+
+    /// The render thread lets go of a frame's buffers here and the completion handler takes
+    /// them; nothing touches them in between, which is what makes the hand-off safe.
+    private struct Handoff: @unchecked Sendable { let buffers: [any MTLBuffer] }
+
+    func finishFrame(on commandBuffer: any MTLCommandBuffer) {
+        let used = Handoff(buffers: inUse)
+        inUse = []
+        current = nil
+        guard !used.buffers.isEmpty else { return }
+        commandBuffer.addCompletedHandler { [lock] _ in
+            lock.withLockUnchecked { free in
+                free.append(contentsOf: used.buffers)
+                // Bounded, so one enormous frame does not pin its buffers forever.
+                if free.count > 8 { free.removeFirst(free.count - 8) }
+            }
+        }
+    }
+
+    private static func aligned(_ value: Int) -> Int {
+        (value + alignment - 1) / alignment * alignment
     }
 }
