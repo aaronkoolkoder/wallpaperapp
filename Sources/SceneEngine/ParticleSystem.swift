@@ -16,6 +16,7 @@ struct Particle {
     var rotation: Float = 0
     var angularVelocity: Float = 0
     var color: SIMD3<Float> = .one
+    var colorInitial: SIMD3<Float> = .one
     var alpha: Float = 1
     var alphaInitial: Float = 1
     var age: Float = 0
@@ -76,6 +77,11 @@ public final class ParticleSystem {
     private var hasAlphaFade = false
     private var sizeChangeScale: Float = 1
     private var hasSizeChange = false
+    /// Colour over life, as a multiplier on the particle's own colour.
+    private var hasColorChange = false
+    private var colorChangeSpan: ClosedRange<Float> = 0...1
+    private var colorChangeFrom: SIMD3<Float> = .one
+    private var colorChangeTo: SIMD3<Float> = .one
 
     public init(document: ParticleDocument) {
         self.document = document
@@ -156,6 +162,13 @@ public final class ParticleSystem {
             case "angularmovement":
                 // Already integrated from angular velocity; nothing extra to configure.
                 break
+            case "colorchange":
+                hasColorChange = true
+                let start = op.float("starttime") ?? 0
+                let end = op.float("endtime") ?? 1
+                colorChangeSpan = min(start, end)...max(start, end)
+                colorChangeFrom = vector(op, "startvalue", default: .one)
+                colorChangeTo = vector(op, "endvalue", default: .one)
             case "turbulence":
                 turbulenceScale = op.float("scale") ?? 0.005
                 let slowest = op.float("speedmin") ?? 500
@@ -215,20 +228,31 @@ public final class ParticleSystem {
                 }
 
                 particle.velocity += gravityStep
-                if turbulenceStep > 0 {
-                    particle.velocity += turbulence(at: particle.position) * turbulenceStep
-                }
                 particle.velocity *= dragFactor
                 particle.position += particle.velocity * deltaTime
+                if turbulenceStep > 0 {
+                    // A speed the particle is carried at along the field, not a push its drag
+                    // then soaks up. As a push, a 500-1000px/s emitter with drag 4 crawled at a
+                    // quarter of that and 20,000 particles piled into one white blob.
+                    particle.position += turbulence(at: particle.position) * turbulenceStep
+                }
                 particle.rotation += particle.angularVelocity * deltaTime
 
                 if hasAlphaFade {
                     particle.alpha = particle.alphaInitial
                         * fadeFactor(age: particle.age, lifetime: particle.lifetime)
                 }
-                if hasSizeChange {
+                if hasSizeChange || hasColorChange {
                     let life = particle.age / max(0.0001, particle.lifetime)
-                    particle.size = particle.sizeInitial * (1 + (sizeChangeScale - 1) * life)
+                    if hasSizeChange {
+                        particle.size = particle.sizeInitial * (1 + (sizeChangeScale - 1) * life)
+                    }
+                    if hasColorChange {
+                        let span = max(0.0001, colorChangeSpan.upperBound - colorChangeSpan.lowerBound)
+                        let t = min(max((life - colorChangeSpan.lowerBound) / span, 0), 1)
+                        particle.color = particle.colorInitial
+                            * (colorChangeFrom + (colorChangeTo - colorChangeFrom) * t)
+                    }
                 }
 
                 buffer[index] = particle
@@ -242,7 +266,10 @@ public final class ParticleSystem {
     /// Cheap enough for thousands of particles a frame, and it spreads and stirs them the way the
     /// operator is used for, which is what matters more than matching its exact noise.
     private func turbulence(at position: SIMD3<Float>) -> SIMD3<Float> {
-        let p = position * turbulenceScale
+        // `scale` is the field's frequency: one swirl every 1/scale units. Neighbours a fraction
+        // of that apart are carried different ways, which is what scatters an emitter's output
+        // across the scene instead of drifting it as one.
+        let p = position * (turbulenceScale * 2 * .pi)
         let t = elapsed * turbulenceTimescale * 0.1
         return SIMD3(
             sinf(p.y * 1.7 + t) + sinf(p.z * 2.3 - t * 1.3),
@@ -321,6 +348,8 @@ public final class ParticleSystem {
             .random(in: componentRange(colorMin.y, colorMax.y), using: &random),
             .random(in: componentRange(colorMin.z, colorMax.z), using: &random)
         )
+        particle.colorInitial = particle.color
+        if hasColorChange { particle.color *= colorChangeFrom }
         return particle
     }
 

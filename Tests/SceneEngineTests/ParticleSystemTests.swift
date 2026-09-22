@@ -272,4 +272,48 @@ struct ParticleSystemTests {
             #expect(draw.uvRect == instance.uvRect)
         }
     }
+
+    @Test("Colour change runs from its start colour to its end colour over the set part of life")
+    func colourChange() throws {
+        // Real content: pink to light blue between 20% and 80% of each particle's life.
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":5,
+         "emitter":[{"name":"boxrandom","rate":1000,"distancemax":0}],
+         "initializer":[{"name":"lifetimerandom","min":1,"max":1}],
+         "operator":[{"name":"colorchange","starttime":0.2,"endtime":0.8,
+                      "startvalue":"1 0.5 0.5","endvalue":"0.25 0.75 1"}]}
+        """))
+        func tint() -> SIMD4<Float> {
+            var instances: [ParticleInstance] = []
+            system.appendInstances(to: &instances, cameraOffset: .zero)
+            return instances.first?.tint ?? .zero
+        }
+        system.update(deltaTime: 0.001)
+        #expect(simd_distance(tint(), SIMD4(1, 0.5, 0.5, 1)) < 0.01)
+        system.update(deltaTime: 0.499)
+        #expect(simd_distance(tint(), SIMD4(0.625, 0.625, 0.75, 1)) < 0.02)
+        system.update(deltaTime: 0.4)
+        #expect(simd_distance(tint(), SIMD4(0.25, 0.75, 1, 1)) < 0.01)
+        #expect(!system.findings.contains { $0.detail?.contains("colorchange") == true })
+    }
+
+    @Test("Turbulence carries particles at its speed, whatever their drag")
+    func turbulenceSpeed() throws {
+        // Real content pairs 500-1000px/s turbulence with drag 4. Treated as a push, the drag
+        // held particles to a crawl and 20,000 of them piled into one white blob.
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":200,
+         "emitter":[{"name":"sphererandom","rate":4000,"distancemin":256,"directions":"1 1 0"}],
+         "initializer":[{"name":"lifetimerandom","min":10,"max":10}],
+         "operator":[{"name":"movement","drag":4},
+                     {"name":"turbulence","scale":0.005,"speedmin":500,"speedmax":1000,"timescale":1}]}
+        """))
+        system.update(deltaTime: 0.05)
+        let before = positions(system)
+        for _ in 0 ..< 10 { system.update(deltaTime: 0.01) }
+        let moved = zip(before, positions(system).prefix(before.count)).map { simd_distance($0, $1) }
+        let mean = moved.reduce(0, +) / Float(max(moved.count, 1))
+        // A tenth of a second at a few hundred units a second.
+        #expect(mean > 10, "particles moved \(mean) on average")
+    }
 }
