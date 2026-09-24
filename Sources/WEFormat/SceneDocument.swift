@@ -197,25 +197,52 @@ public struct SceneEffectPass: Sendable, Hashable, Codable {
     public var combos: [String: Int]
     /// Keyed by the uniform's `material` name, as the material's own values are.
     public var constantShaderValues: [String: DynamicValue]
+    /// The user property driving a constant, where the author bound one, keyed the same way.
+    public var constantBindings: [String: String]
     /// Entry `N` is the texture for sampler `g_TextureN`; nil leaves that sampler as it was.
     public var textures: [String?]
 
     public init(
         combos: [String: Int] = [:],
         constantShaderValues: [String: DynamicValue] = [:],
+        constantBindings: [String: String] = [:],
         textures: [String?] = []
     ) {
         self.combos = combos
         self.constantShaderValues = constantShaderValues
+        self.constantBindings = constantBindings
         self.textures = textures
+    }
+
+    /// A pass constant as the format writes it.
+    ///
+    /// Plain until the author binds it to one of the wallpaper's own settings, and an object
+    /// carrying the same value beside that binding from then on — the same two spellings every
+    /// other property in `scene.json` has. Read as a plain value only, a bound one decoded as
+    /// nothing and the shader's own default stood in for it: the tint on Chainsaw Man's walls
+    /// defaults to "1 0 0", so both walls of the wallpaper rendered pure red.
+    private struct Constant: Decodable {
+        var value: DynamicValue
+        var user: String?
+
+        init(from decoder: Decoder) throws {
+            if let plain = try? DynamicValue(from: decoder), plain != .null {
+                value = plain
+                user = nil
+                return
+            }
+            let object = try CaseInsensitiveContainer(from: decoder)
+            value = object.value(DynamicValue.self, "value") ?? .null
+            user = object.string("user")
+        }
     }
 
     public init(from decoder: Decoder) throws {
         let object = try CaseInsensitiveContainer(from: decoder)
         combos = object.value([String: Int].self, "combos") ?? [:]
-        constantShaderValues = object.value(
-            [String: DynamicValue].self, "constantshadervalues"
-        ) ?? [:]
+        let constants = object.value([String: Constant].self, "constantshadervalues") ?? [:]
+        constantShaderValues = constants.compactMapValues { $0.value == .null ? nil : $0.value }
+        constantBindings = constants.compactMapValues(\.user)
         textures = object.value([String?].self, "textures") ?? []
     }
 
@@ -223,6 +250,7 @@ public struct SceneEffectPass: Sendable, Hashable, Codable {
         var container = encoder.container(keyedBy: AnyCodingKey.self)
         try container.encodeIfPresent(combos, "combos")
         try container.encodeIfPresent(constantShaderValues, "constantshadervalues")
+        try container.encodeIfPresent(constantBindings, "constantbindings")
         try container.encodeIfPresent(textures, "textures")
     }
 }

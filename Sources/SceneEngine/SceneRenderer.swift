@@ -64,7 +64,23 @@ public final class SceneRenderer {
     /// Applied per draw rather than baked into the scene, so changing one takes effect on the
     /// next frame. Rebuilding the scene for every tick of a slider would recompile shaders and
     /// reload textures to change one float.
-    public var propertyOverrides: [String: DynamicValue] = [:]
+    public var propertyOverrides: [String: DynamicValue] = [:] {
+        didSet { resolveProperties() }
+    }
+
+    /// The user's settings over the wallpaper's own, which is what everything here reads.
+    ///
+    /// A wallpaper ships its settings in `project.json` and only what the user has since
+    /// changed travels in `properties`, so anything bound to a setting has to see both.
+    private var properties: [String: DynamicValue] = [:]
+
+    private func resolveProperties() {
+        guard let defaults = scene?.propertyDefaults, !defaults.isEmpty else {
+            properties = propertyOverrides
+            return
+        }
+        properties = defaults.merging(propertyOverrides) { _, chosen in chosen }
+    }
 
     /// Latest analysed system audio. Silent unless the user has enabled audio reactivity.
     public var audio: AudioFrame = .silent
@@ -99,6 +115,7 @@ public final class SceneRenderer {
 
     public func setScene(_ scene: RenderableScene) {
         self.scene = scene
+        resolveProperties()
         camera = scene.cameraMotion
         workingLayers = scene.layers
         textShown = [:]
@@ -128,10 +145,26 @@ public final class SceneRenderer {
         // `compileMaterials: false` draws every layer through the built-in quad shader, which
         // is what the renderer did before the transpiler. Kept reachable so the cost of running
         // a wallpaper's own shaders can be measured rather than argued about.
-        return SceneBuilder().build(
+        var scene = SceneBuilder().build(
             document: document, assets: assets, device: device,
             materials: materials ?? (compileMaterials ? MaterialCompiler(device: device) : nil)
         )
+        scene.propertyDefaults = Self.propertyDefaults(in: directory)
+        return scene
+    }
+
+    /// The wallpaper's settings as it ships them, read from its manifest.
+    ///
+    /// Anything the author bound to a setting — a tinted wall, a layer that shows only when a
+    /// box is ticked — follows that setting's current value, and until the user changes
+    /// anything that value is the one in `project.json`. Without it such a binding fell back to
+    /// whatever was cached in `scene.json` when the author last saved, which is a different
+    /// value often enough to matter: Chainsaw Man's walls ship green and were saved grey.
+    static func propertyDefaults(in directory: URL) -> [String: DynamicValue] {
+        guard let manifest = try? ProjectManifest(
+            contentsOf: directory.appendingPathComponent("project.json")
+        ) else { return [:] }
+        return (manifest.general?.properties ?? [:]).compactMapValues(\.value)
     }
 
     /// What the render-target pool has been doing: allocations made, reuses served, and bytes
@@ -263,9 +296,9 @@ public final class SceneRenderer {
 
         // Only what is actually running counts: a scene whose sole effect is an optional one
         // the user has switched off should take the fast path, not pay for an accumulator.
-        let hasEffects = !scene.sceneEffects.active(with: propertyOverrides).isEmpty
+        let hasEffects = !scene.sceneEffects.active(with: properties).isEmpty
             || workingLayers.contains {
-                $0.isShown(with: propertyOverrides) && !$0.effects.active(with: propertyOverrides).isEmpty
+                $0.isShown(with: properties) && !$0.effects.active(with: properties).isEmpty
             }
 
         if hasEffects {
@@ -366,7 +399,7 @@ public final class SceneRenderer {
                     constants: draw.constants,
                     textureSizes: draw.textureSizes,
                     repeatingTextures: draw.repeatingTextures,
-                    overrides: propertyOverrides,
+                    overrides: properties,
                     engine: engineUniforms()
                 ),
                 into: encoder
@@ -433,7 +466,7 @@ public final class SceneRenderer {
             if case .compiled(let effect) = group[0].implementation, group.count == 1 {
                 let ran = effectRunner.run(
                     effect, source: current, destination: target,
-                    overrides: propertyOverrides, engine: engineUniforms(),
+                    overrides: properties, engine: engineUniforms(),
                     commandBuffer: buffer, pool: pool
                 )
                 if !ran {
@@ -575,7 +608,7 @@ public final class SceneRenderer {
         scene: RenderableScene, cameraOffset: SIMD2<Float>, into draws: inout [SceneDraw]
     ) {
         draws.removeAll(keepingCapacity: true)
-        for sceneLayer in workingLayers where sceneLayer.isShown(with: propertyOverrides) {
+        for sceneLayer in workingLayers where sceneLayer.isShown(with: properties) {
             draws.append(Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset))
         }
 
@@ -644,9 +677,9 @@ public final class SceneRenderer {
 
         var batch: [SceneDraw] = []
 
-        for sceneLayer in workingLayers where sceneLayer.isShown(with: propertyOverrides) {
+        for sceneLayer in workingLayers where sceneLayer.isShown(with: properties) {
             let draw = Self.sceneDraw(for: sceneLayer, cameraOffset: cameraOffset)
-            let effects = sceneLayer.effects.active(with: propertyOverrides)
+            let effects = sceneLayer.effects.active(with: properties)
 
             guard !effects.isEmpty else {
                 batch.append(draw)
@@ -753,7 +786,7 @@ public final class SceneRenderer {
 
         // Scene-wide chain straight into the target.
         applyEffectChain(
-            scene.sceneEffects.active(with: propertyOverrides),
+            scene.sceneEffects.active(with: properties),
             source: accumulator.texture,
             destination: target,
             buffer: buffer

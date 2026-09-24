@@ -32,6 +32,9 @@ public struct CompiledEffectPass: @unchecked Sendable {
     /// undeclared, which would shift every later binding onto the wrong texture.
     public var inputs: [Int: EffectInput]
     public var constants: [String: DynamicValue]
+    /// Constants the author bound to one of the wallpaper's own settings, so that changing
+    /// that setting changes the effect — which is the whole point of binding one.
+    public var bindings: [String: String] = [:]
 }
 
 /// An effect whose own shaders will run, rather than a built-in approximation of it.
@@ -283,7 +286,7 @@ public final class EffectChainRunner {
                     transform: Self.fullscreenTransform,
                     projection: matrix_identity_float4x4,
                     textures: textures,
-                    constants: pass.constants,
+                    constants: Self.constants(pass.constants, bound: pass.bindings, with: overrides),
                     textureSizes: sizes,
                     repeatingTextures: repeating,
                     overrides: overrides,
@@ -294,6 +297,24 @@ public final class EffectChainRunner {
             encoder.endEncoding()
         }
         return true
+    }
+
+    /// A pass's constants, with anything the user has since changed in place of what the
+    /// author saved.
+    ///
+    /// Nothing is built for the overwhelming majority of passes, which bind nothing: the
+    /// author's values are handed over as they are.
+    static func constants(
+        _ authored: [String: DynamicValue],
+        bound bindings: [String: String],
+        with overrides: [String: DynamicValue]
+    ) -> [String: DynamicValue] {
+        guard !bindings.isEmpty, !overrides.isEmpty else { return authored }
+        var constants = authored
+        for (uniform, property) in bindings {
+            if let chosen = overrides[property] { constants[uniform] = chosen }
+        }
+        return constants
     }
 }
 
@@ -400,12 +421,17 @@ extension MaterialCompiler {
 
             var constants = materialPass.constantShaderValues
             constants.merge(pass.constantShaderValues) { _, effectValue in effectValue }
+            // Only the instance binds to the wallpaper's settings: the effect definition and
+            // the material are the same for everyone who uses them.
+            var bindings: [String: String] = [:]
             if let placement {
                 constants.merge(placement.constantShaderValues) { _, placed in placed }
+                bindings = placement.constantBindings
             }
 
             compiled.append(CompiledEffectPass(
-                program: program, target: pass.target, inputs: inputs, constants: constants
+                program: program, target: pass.target, inputs: inputs,
+                constants: constants, bindings: bindings
             ))
         }
 

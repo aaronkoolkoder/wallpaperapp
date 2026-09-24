@@ -108,6 +108,9 @@ public struct RenderableScene: @unchecked Sendable {
     public var particles: [ParticleSystem] = []
     /// Post-process chain applied to the fully composited frame.
     public var sceneEffects: [LayerEffect] = []
+    /// The wallpaper's own settings as it ships them, which anything bound to a setting falls
+    /// back to. The user's own choices are applied over these at draw time.
+    public var propertyDefaults: [String: DynamicValue] = [:]
     /// Compiled SceneScript bindings, evaluated once per frame.
     public var scriptBindings: [ScriptBinding] = []
     /// Text layers whose string comes from a script — clocks and dates.

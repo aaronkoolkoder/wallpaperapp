@@ -84,11 +84,15 @@ Benchmark scenes, each built to isolate one feature:
 Video misses its sub-1% target; the cause is understood and written up in PLAN.md §6.1 rather
 than glossed over.
 
-Real Workshop content costs more than the benchmarks. Playing each of the 59 scenes in the library
-above on the desktop in turn, with rendering forced on while the desktop was covered so it could
-be measured, took a median of **3.5%**, with 90% of scenes under **8.8%**. The most expensive
-scene, at **17.8%**, emits 15,000 particles a second, which are simulated on the CPU. The ten
-video wallpapers — 1080p up to 4K at 60fps and 1440p at 120fps — took **1–5%**.
+Real Workshop content costs more than the benchmarks. Rendering each of the 59 scenes in the
+library above at 3024x1964 and 30fps, through the same composition the desktop runs, takes a
+median of **0.9%** of one core, with 90% of scenes under **2.5%** and the most expensive at
+**5.4%** — best of three runs each, because the spread between runs on one machine is scheduling
+rather than the renderer. That figure is measured offscreen, so it leaves out what the window
+server spends putting each frame on the display. Measured live on the desktop instead, and before
+per-layer effects were given render targets the size of the layer rather than the size of the
+screen, the same 59 scenes had a median of 3.5% and a maximum of 17.8%. The ten video wallpapers —
+1080p up to 4K at 60fps and 1440p at 120fps — took **1–5%**.
 
 ## Install
 

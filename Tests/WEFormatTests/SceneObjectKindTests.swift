@@ -81,4 +81,27 @@ struct SceneObjectKindTests {
         #expect(broken.particleOverrides?.rate == nil)
         #expect(broken.particleOverrides?.size == 0.5)
     }
+
+    /// An effect's tuned values take the same two spellings every other property does.
+    @Test("A pass constant bound to a setting is read, with the setting it follows")
+    func passConstantsReadTheObjectForm() throws {
+        let effect = try JSONDecoder().decode(SceneEffect.self, from: Data("""
+        {"name":"tint","file":"effects/tint/effect.json","passes":[
+          {"id":107,"combos":{"BLENDMODE":30},
+           "constantshadervalues":{
+             "alpha":1.0,
+             "color":{"user":"brickbackgroundcolor","value":"0.75 0.75 0.75"}}}]}
+        """.utf8))
+        let pass = try #require(effect.passes.first)
+
+        // Read as a plain value only, a bound constant decoded as nothing and the shader's own
+        // default stood in for it. `tint.frag` defaults to "1 0 0", so both walls of a
+        // wallpaper rendered pure red.
+        // Vectors stay as the space-separated text the format writes, the same as a plain one
+        // would; the uniform writer parses them on the way into the buffer.
+        #expect(pass.constantShaderValues["color"] == .string("0.75 0.75 0.75"))
+        #expect(pass.constantShaderValues["alpha"] == .number(1))
+        #expect(pass.constantBindings["color"] == "brickbackgroundcolor")
+        #expect(pass.constantBindings["alpha"] == nil, "a plain value follows nothing")
+    }
 }

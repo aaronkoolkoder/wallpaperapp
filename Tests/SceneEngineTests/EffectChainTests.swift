@@ -238,4 +238,24 @@ struct EffectChainTests {
         #expect(chain.map(\.debugName) == ["vignette", "sharpen", "author", "pixelate"])
         #expect(chain.builtInOnly.count == 3)
     }
+
+    /// A constant the author bound to one of the wallpaper's settings has to follow that
+    /// setting, or the setting does nothing.
+    @Test("A bound constant follows the user's setting, and is left alone when they have none")
+    func boundConstantsFollowTheSetting() {
+        let authored: [String: DynamicValue] = [
+            "color": .vector3(WEVector3(0.75, 0.75, 0.75)), "alpha": .number(1),
+        ]
+        let bindings = ["color": "brickbackgroundcolor"]
+
+        let untouched = EffectChainRunner.constants(authored, bound: bindings, with: [:])
+        #expect(untouched["color"] == .vector3(WEVector3(0.75, 0.75, 0.75)))
+
+        let chosen = EffectChainRunner.constants(
+            authored, bound: bindings,
+            with: ["brickbackgroundcolor": .vector3(WEVector3(0.29, 0.48, 0.42))]
+        )
+        #expect(chosen["color"] == .vector3(WEVector3(0.29, 0.48, 0.42)))
+        #expect(chosen["alpha"] == .number(1), "everything else is left as the author set it")
+    }
 }
