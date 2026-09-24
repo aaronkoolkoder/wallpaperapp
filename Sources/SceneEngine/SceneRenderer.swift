@@ -675,6 +675,14 @@ public final class SceneRenderer {
             let box = Self.effectTarget(
                 for: draw.quad.transform, projection: projection, width: width, height: height
             )
+
+            // Nothing an off-screen layer's effects do can reach the frame, now that the chain
+            // runs in the layer's own box and is composited back over it. Eleven layers in the
+            // test library stand outside the frame and three of them carry chains; skipping
+            // them makes no measurable difference there, because a layer-sized chain is cheap
+            // either way, and bounds the case where such a layer is the size of a backdrop.
+            if let box, !Self.isOnScreen(box, projection: projection) { continue }
+
             guard let box, let isolated = pool.acquire(
                 width: box.pixels.x, height: box.pixels.y, pixelFormat: target.pixelFormat
             ), let processed = pool.acquire(
@@ -873,6 +881,24 @@ public final class SceneRenderer {
             width: CGFloat((highest.x - lowest.x) * scale.x),
             height: CGFloat((highest.y - lowest.y) * scale.y)
         )
+    }
+
+    /// Whether any part of a box falls inside the frame.
+    static func isOnScreen(_ box: EffectBox, projection: simd_float4x4) -> Bool {
+        let half = box.size * 0.5
+        var lowest = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var highest = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        for corner in [SIMD2<Float>(-1, -1), SIMD2(1, -1), SIMD2(-1, 1), SIMD2(1, 1)] {
+            let point = box.centre + half * corner
+            let clip = projection * SIMD4(point.x, point.y, 0, 1)
+            // A degenerate projection is not a reason to drop a layer; draw it and let the
+            // rasteriser decide.
+            guard clip.w != 0 else { return true }
+            let ndc = SIMD2(clip.x / clip.w, clip.y / clip.w)
+            lowest = simd_min(lowest, ndc)
+            highest = simd_max(highest, ndc)
+        }
+        return highest.x >= -1 && lowest.x <= 1 && highest.y >= -1 && lowest.y <= 1
     }
 
     /// Maps an effect box onto the whole of its render target.

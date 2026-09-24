@@ -66,12 +66,39 @@ public struct MaterialProgram: @unchecked Sendable {
     /// which is what it reads when nothing else assigns it one.
     public var samplerDefaults: [String: String] = [:]
 
+    /// How each stage's uniforms are filled, and the keys its constant buffers are cached
+    /// under. Both are the same every frame, so both are settled here rather than per draw —
+    /// the cache keys were being rebuilt by string concatenation on the frame path.
+    public var uniformPlans = UniformPlans()
+
     /// Unit-quad geometry laid out for this shader's own attributes.
     public var vertexBuffer: any MTLBuffer
     public var vertexBufferIndex: Int
     public var vertexCount: Int
 
     public var diagnostics: [ShaderDiagnostic]
+}
+
+/// A program's per-stage uniform plans, by reference.
+///
+/// A class rather than two more fields on the struct: a `MaterialProgram` is copied into every
+/// draw, and a reference costs one retain where two arrays cost several.
+public final class UniformPlans: @unchecked Sendable {
+    public let vertex: UniformPlan
+    public let fragment: UniformPlan
+    /// Keys the constant buffers are cached under, built once.
+    public let vertexKey: String
+    public let fragmentKey: String
+
+    public init(
+        vertex: UniformPlan = UniformPlan(), fragment: UniformPlan = UniformPlan(),
+        vertexKey: String = "", fragmentKey: String = ""
+    ) {
+        self.vertex = vertex
+        self.fragment = fragment
+        self.vertexKey = vertexKey
+        self.fragmentKey = fragmentKey
+    }
 }
 
 public enum MaterialProgramError: Error, LocalizedError {
@@ -267,6 +294,12 @@ public final class MaterialCompiler {
                     return (sampler.name, path)
                 },
                 uniquingKeysWith: { first, _ in first }
+            ),
+            uniformPlans: UniformPlans(
+                vertex: UniformPlan(layout: vertex.layout, declarations: vertex.uniforms),
+                fragment: UniformPlan(layout: fragment.layout, declarations: fragment.uniforms),
+                vertexKey: shaderName + ".vert",
+                fragmentKey: shaderName + ".frag"
             ),
             vertexBuffer: geometry.buffer,
             vertexBufferIndex: vertexBufferIndex,

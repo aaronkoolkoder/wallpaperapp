@@ -381,4 +381,80 @@ struct UniformBufferWriterTests {
         )
         #expect(floats(result, at: 0, count: 3) == [1, 0, 0])
     }
+
+    /// The render path fills from a plan worked out when the shader compiled, rather than by
+    /// matching names per draw. It has to put exactly the same bytes in the buffer: the plan is
+    /// a way of not redoing the decision, not a different decision.
+    @Test("Filling from a plan writes the same buffer as filling by name")
+    func planMatchesTheNameDrivenFill() {
+        let declarations = [
+            declaration("g_ModelViewProjection", .mat4),
+            declaration("g_Time", .float),
+            declaration("g_Texture0Resolution", .vec4),
+            declaration("g_Tint", .vec4, material: "tint", defaultValue: .vector([1, 1, 1, 1]),
+                        editor: .color),
+            declaration("g_Speed", .float, material: "speed", defaultValue: .scalar(0.5)),
+            declaration("g_Bands", .float, arrayLength: 16),
+            declaration("g_Unknown", .vec2, unannotated: true),
+        ]
+        let layout = UniformBlockLayout.std140(for: declarations)
+        var engine = EngineUniforms(
+            time: 12.5, dayTime: 0.25, pointerPosition: SIMD2(0.2, -0.4),
+            textureResolutions: [SIMD4(1920, 1080, 1900, 1000)]
+        )
+        engine.modelViewProjection = simd_float4x4(diagonal: SIMD4(2, 3, 4, 1))
+        let constants: [String: DynamicValue] = ["g_Bands": .number(3)]
+        let overrides: [String: DynamicValue] = ["tint": .string("1 0 0"), "speed": .number(2)]
+
+        let byName = UniformBufferWriter.fill(
+            layout: layout, declarations: declarations,
+            constants: constants, overrides: overrides, engine: engine
+        )
+
+        var bytes: [UInt8] = []
+        var scratch: [Float] = []
+        var unsupplied: [String] = []
+        UniformBufferWriter.fill(
+            into: &bytes, plan: UniformPlan(layout: layout, declarations: declarations),
+            constants: constants, overrides: overrides, engine: engine,
+            scratch: &scratch, unsupplied: &unsupplied
+        )
+
+        #expect(Array(bytes.prefix(layout.size)) == Array(byName.bytes.prefix(layout.size)))
+        #expect(unsupplied == byName.unsuppliedEngineUniforms)
+        #expect(unsupplied == ["g_Unknown"], "a reserved name nothing supplies is still reported")
+        // A colour written as three components still gets its alpha completed, or the layer
+        // it tints multiplies away to nothing.
+        #expect(floats(byName, at: layout.members.first { $0.name == "g_Tint" }!.offset, count: 4)
+                == [1, 0, 0, 1])
+    }
+
+    /// Reading an engine value used to return a fresh array, which on the frame path is an
+    /// allocation per uniform per draw. PLAN.md §6.2 rules those out.
+    @Test("An engine value is read into caller-owned storage, which is reused")
+    func engineValuesFillCallerStorage() {
+        var engine = EngineUniforms(time: 7, screenSize: SIMD2(800, 600))
+        engine.modelViewProjection = simd_float4x4(diagonal: SIMD4(1, 2, 3, 4))
+        var scratch: [Float] = []
+
+        #expect(engine.read(.time, into: &scratch) == 1)
+        #expect(scratch[0] == 7)
+        #expect(engine.read(.modelViewProjection, into: &scratch) == 16)
+        #expect(Array(scratch.prefix(6)) == [1, 0, 0, 0, 0, 2])
+        #expect(engine.read(.texelSize, into: &scratch) == 2)
+        #expect(abs(scratch[0] - 1.0 / 800) < 1e-6)
+        // Storage grew once and is reused for every read after.
+        #expect(scratch.count >= 16)
+        // Nothing to supply stays nothing to supply, rather than reading as zeros.
+        #expect(engine.read(.audioSpectrumLeft, into: &scratch) == nil)
+        #expect(engine.read(.textureResolution(3), into: &scratch) == nil)
+    }
+
+    @Test("A name that means no engine value resolves to no slot")
+    func slotsResolveByName() {
+        #expect(EngineUniforms.Slot.named("g_ModelViewProjectionMatrix") == .modelViewProjection)
+        #expect(EngineUniforms.Slot.named("g_GlobalTime") == .time)
+        #expect(EngineUniforms.Slot.named("g_Texture3Resolution") == .textureResolution(3))
+        #expect(EngineUniforms.Slot.named("g_Tint") == nil)
+    }
 }

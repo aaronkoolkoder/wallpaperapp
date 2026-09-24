@@ -220,4 +220,23 @@ struct FrameCoverageTests {
         )
         #expect(resolutions.count == 4, "g_Texture3 must be reachable at index 3")
     }
+
+    @Test("A layer standing outside the frame is not run through its effects")
+    func offScreenLayersAreSkipped() {
+        // Its chain runs in its own box and is composited back over it, so nothing it does can
+        // reach the frame — and a scene of parallax strips has several such layers.
+        let scene = self.scene(ortho: SIMD2(1920, 1080))
+        let projection = SceneRenderer.aspectFilledProjection(
+            scene: scene, drawableSize: SIMD2(1512, 982)
+        )
+        func box(at centre: SIMD2<Float>, size: SIMD2<Float> = SIMD2(200, 200)) -> SceneRenderer.EffectBox {
+            SceneRenderer.EffectBox(centre: centre, size: size, pixels: SIMD2(64, 64))
+        }
+
+        #expect(SceneRenderer.isOnScreen(box(at: SIMD2(960, 540)), projection: projection))
+        #expect(SceneRenderer.isOnScreen(box(at: SIMD2(30, 540)), projection: projection),
+                "a layer straddling the edge is still partly visible")
+        #expect(!SceneRenderer.isOnScreen(box(at: SIMD2(4000, 540)), projection: projection))
+        #expect(!SceneRenderer.isOnScreen(box(at: SIMD2(960, -800)), projection: projection))
+    }
 }

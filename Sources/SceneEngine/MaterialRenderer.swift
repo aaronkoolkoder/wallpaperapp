@@ -26,6 +26,10 @@ public final class MaterialRenderer {
     /// Reused across draws so filling a constant buffer allocates nothing per frame.
     private var vertexScratch: [UInt8] = []
     private var fragmentScratch: [UInt8] = []
+    /// Reused for the same reason the byte buffers are: an engine value read into a fresh
+    /// array would be one allocation per uniform per draw per frame.
+    private var floatScratch: [Float] = []
+    private var unsuppliedScratch: [String] = []
 
     /// Counts draws that had to fall back to a placeholder texture, for the compatibility report.
     public private(set) var missingTextureBindings = 0
@@ -136,37 +140,41 @@ public final class MaterialRenderer {
             sizes: context.textureSizes
         )
 
-        var unsupplied: [String] = []
+        unsuppliedScratch.removeAll(keepingCapacity: true)
 
         if let slot = program.vertexBufferSlot, !program.vertexLayout.isEmpty {
-            unsupplied += UniformBufferWriter.fill(
+            UniformBufferWriter.fill(
                 into: &vertexScratch,
-                layout: program.vertexLayout,
-                declarations: program.vertexUniforms,
+                plan: program.uniformPlans.vertex,
                 constants: context.constants,
                 overrides: context.overrides,
-                engine: engine
+                engine: engine,
+                scratch: &floatScratch,
+                unsupplied: &unsuppliedScratch
             )
             bind(
                 vertexScratch, count: program.vertexLayout.size,
-                key: program.name + ".vert", slot: slot, encoder: encoder, stage: .vertex
+                key: program.uniformPlans.vertexKey, slot: slot, encoder: encoder, stage: .vertex
             )
         }
 
         if let slot = program.fragmentBufferSlot, !program.fragmentLayout.isEmpty {
-            unsupplied += UniformBufferWriter.fill(
+            UniformBufferWriter.fill(
                 into: &fragmentScratch,
-                layout: program.fragmentLayout,
-                declarations: program.fragmentUniforms,
+                plan: program.uniformPlans.fragment,
                 constants: context.constants,
                 overrides: context.overrides,
-                engine: engine
+                engine: engine,
+                scratch: &floatScratch,
+                unsupplied: &unsuppliedScratch
             )
             bind(
                 fragmentScratch, count: program.fragmentLayout.size,
-                key: program.name + ".frag", slot: slot, encoder: encoder, stage: .fragment
+                key: program.uniformPlans.fragmentKey, slot: slot, encoder: encoder,
+                stage: .fragment
             )
         }
+        let unsupplied = unsuppliedScratch
 
         // Bound by name through the slots the translator reported. Binding by declaration order
         // would swap textures on any shader whose combos leave a sampler unused, because
