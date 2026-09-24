@@ -419,6 +419,16 @@ case "scene":
             print("  \(layer.name)  size=\(Int(layer.size.x))x\(Int(layer.size.y)) "
                   + "origin=(\(Int(layer.origin.x)),\(Int(layer.origin.y))) "
                   + "blend=\(layer.blend) tex=\(texture)\(effects)")
+            // `--rects` answers the question every misplaced layer raises: where does this
+            // actually land on the screen? Printed in pixels of the frame given, so a layer
+            // reported outside it is one the viewer cannot see.
+            if arguments.contains("--rects") {
+                let corners = SceneRenderer.screenRect(
+                    of: layer, scene: scene, width: 1512, height: 982
+                )
+                print("      on screen: x \(Int(corners.minX))…\(Int(corners.maxX)) "
+                      + "y \(Int(corners.minY))…\(Int(corners.maxY)) of 1512x982")
+            }
         }
 
         let findings = scene.report.findings
@@ -457,6 +467,9 @@ case "scene":
             print(String(format: "at 30 fps:   %.1f%% of one core", perFrame * 3))
             print(String(format: "at 24 fps:   %.1f%% of one core", perFrame * 2.4))
             print(String(format: "wall:        %.1f ms per frame", result.wallSeconds / Double(frames) * 1000))
+            let targets = renderer.renderTargets
+            print("targets:     \(targets.allocations) allocated, \(targets.reuses) reused, "
+                  + "\(byteCount(targets.peakBytes)) at peak")
             exit(0)
         }
 

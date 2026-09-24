@@ -134,6 +134,16 @@ public final class SceneRenderer {
         )
     }
 
+    /// What the render-target pool has been doing: allocations made, reuses served, and bytes
+    /// held now and at peak.
+    ///
+    /// Worth reporting because an effect chain's cost is mostly its targets, and the difference
+    /// between a pool that reuses them and one that reallocates every frame is invisible in a
+    /// frame time until it is large.
+    public var renderTargets: (allocations: Int, reuses: Int, bytes: Int, peakBytes: Int) {
+        (pool.allocationCount, pool.reuseCount, pool.currentBytes, pool.peakBytes)
+    }
+
     /// Why the last `render(to:)` did or did not produce a frame.
     ///
     /// Every way this function gives up is a silent one — the desktop simply stays as it was —
@@ -648,10 +658,27 @@ public final class SceneRenderer {
             if !batch.isEmpty || isFirstWrite { isFirstWrite = false }
             batch.removeAll(keepingCapacity: true)
 
-            guard let isolated = pool.acquire(
-                width: width, height: height, pixelFormat: target.pixelFormat
+            // The layer's own framebuffer, not the screen's.
+            //
+            // An effect in Wallpaper Engine runs on a target the size of the layer it belongs
+            // to, so it works in the layer's space: spin turns the layer where it stands, and a
+            // blur spreads across the layer rather than the desktop. Rendering the layer alone
+            // into a screen-sized texture and running the effect on that puts the layer's centre
+            // wherever it happens to sit on screen, and every effect that moves pixels moves it
+            // somewhere it was never authored to be. That is what threw Studiopolis's windmills
+            // off their buildings and into the sky: a 130-unit sprite with a spin effect, spun
+            // around the centre of a 3024x1964 frame.
+            //
+            // Sizing the target to the layer also makes the chain cheap: a small sprite's
+            // effect costs its own pixels rather than a whole frame's, which took the heaviest
+            // effect scene in the test library from 9.4ms of GPU time per frame to 2.9ms.
+            let box = Self.effectTarget(
+                for: draw.quad.transform, projection: projection, width: width, height: height
+            )
+            guard let box, let isolated = pool.acquire(
+                width: box.pixels.x, height: box.pixels.y, pixelFormat: target.pixelFormat
             ), let processed = pool.acquire(
-                width: width, height: height, pixelFormat: target.pixelFormat
+                width: box.pixels.x, height: box.pixels.y, pixelFormat: target.pixelFormat
             ) else {
                 // No memory for the chain: draw the layer unprocessed rather than dropping it.
                 batch.append(draw)
@@ -667,7 +694,8 @@ public final class SceneRenderer {
             )
             if let encoder = buffer.makeRenderCommandEncoder(descriptor: isolatedPass) {
                 encodeDraws(
-                    [draw], into: encoder, projection: projection,
+                    [draw], into: encoder,
+                    projection: Self.projection(forBox: box),
                     pixelFormat: isolated.texture.pixelFormat
                 )
                 encoder.endEncoding()
@@ -680,10 +708,10 @@ public final class SceneRenderer {
                 buffer: buffer
             )
 
-            // Composite the processed layer back, full-frame.
+            // Composite the processed layer back where the layer stands.
             let composite = SceneDraw(
                 quad: QuadDraw(
-                    transform: Self.fullscreenTransform(projection: projection),
+                    transform: Self.transform(forBox: box),
                     texture: processed.texture,
                     blend: .premultipliedAlpha
                 ),
@@ -724,19 +752,148 @@ public final class SceneRenderer {
         )
     }
 
-    /// A quad that exactly covers the frame under the scene's projection.
+    /// Where an effected layer is rendered: the box it occupies in scene space, and the pixels
+    /// to render that box into.
+    struct EffectBox: Equatable {
+        var centre: SIMD2<Float>
+        var size: SIMD2<Float>
+        var pixels: SIMD2<Int>
+    }
+
+    /// The box to run a layer's effect chain in, from the layer's placement.
     ///
-    /// The composite step draws a processed layer back in the same coordinate space the rest of
-    /// the scene draws in, so it has to be a quad placed *through* the projection: the unit quad
-    /// scaled to clip space's ±1, taken back through the projection's inverse.
+    /// Exactly the layer's own rectangle, with nothing added around it. Padding the target so
+    /// that spin and blur had room to spread sounded reasonable and was wrong: an effect writes
+    /// its whole target, so `depth_parallax` filled the padding around a sky layer with opaque
+    /// grey and hung it across the top half of the wallpaper. The layer's rectangle is what
+    /// Wallpaper Engine gives an effect, and content is authored to it — a windmill's blades
+    /// are drawn to fit inside their own sprite exactly so that spinning them stays in frame.
     ///
-    /// Derived rather than assumed. This used to take only the projection's scale, which is
-    /// right only for a projection centred on zero — and the scene projection places its
-    /// corner at the origin, with the centre folded into the translation. The quad therefore
-    /// landed a full half-frame down and to the left, and every layer with an effect of its own
-    /// showed on the desktop as its top-right quarter, in the bottom-left quarter of the screen.
-    static func fullscreenTransform(projection: simd_float4x4) -> simd_float4x4 {
-        projection.inverse * simd_float4x4(diagonal: SIMD4(2, 2, 1, 1))
+    /// Nil when the layer has no area to render — a zero size, or a transform gone non-finite
+    /// through a script — in which case the caller draws it without its effects rather than
+    /// asking the pool for a degenerate target.
+    static func effectTarget(
+        for transform: simd_float4x4,
+        projection: simd_float4x4,
+        width: Int,
+        height: Int
+    ) -> EffectBox? {
+        var lowest = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var highest = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        for corner in [
+            SIMD4<Float>(-0.5, -0.5, 0, 1), SIMD4(0.5, -0.5, 0, 1),
+            SIMD4(-0.5, 0.5, 0, 1), SIMD4(0.5, 0.5, 0, 1),
+        ] {
+            let point = transform * corner
+            guard point.w != 0 else { return nil }
+            let placed = SIMD2(point.x / point.w, point.y / point.w)
+            guard placed.x.isFinite, placed.y.isFinite else { return nil }
+            lowest = simd_min(lowest, placed)
+            highest = simd_max(highest, placed)
+        }
+
+        let size = highest - lowest
+        guard size.x > 0, size.y > 0 else { return nil }
+
+        // Scene units to pixels comes straight off the projection's diagonal: it is a plain
+        // orthographic matrix, so that is its scale.
+        guard let pixels = targetPixels(
+            width: size.x * abs(projection.columns.0.x) * 0.5 * Float(width),
+            height: size.y * abs(projection.columns.1.y) * 0.5 * Float(height),
+            frame: SIMD2(width, height)
+        ) else { return nil }
+
+        return EffectBox(centre: (lowest + highest) * 0.5, size: size, pixels: pixels)
+    }
+
+    /// An effect target's pixels: the layer's size on screen, bounded, and always its own shape.
+    ///
+    /// Keeping the shape is the part that matters for how the wallpaper looks. Effects work in
+    /// texels, so a target with the wrong aspect ratio shears everything they do — clamping a
+    /// scrolling strip seven times wider than it is tall into a frame-shaped target stretched
+    /// the scroll itself, and a parallax scene of such strips came out visibly wrong.
+    ///
+    /// Bounded twice: never more pixels in total than the frame has, and no axis more than
+    /// twice the frame's. Layers several times the size of the screen are ordinary in parallax
+    /// content, and one target at such a layer's full size is already hundreds of megabytes.
+    /// Every layer that fits inside the frame — which is most of them — is rendered at exactly
+    /// its own size, so the pool holds many small targets where it used to hold a few large
+    /// ones: less memory for a scene of sprites, more for one built from full-screen layers.
+    static func targetPixels(width: Float, height: Float, frame: SIMD2<Int>) -> SIMD2<Int>? {
+        guard width.isFinite, height.isFinite, width > 0, height > 0 else { return nil }
+        var (across, down) = (Double(width), Double(height))
+
+        let budget = Double(max(1, frame.x)) * Double(max(1, frame.y))
+        if across * down > budget {
+            let scale = (budget / (across * down)).squareRoot()
+            across *= scale
+            down *= scale
+        }
+        // A long thin layer can satisfy the pixel budget and still want an enormous single axis.
+        let widest = Double(max(1, frame.x) * 2), tallest = Double(max(1, frame.y) * 2)
+        if across > widest {
+            down *= widest / across
+            across = widest
+        }
+        if down > tallest {
+            across *= tallest / down
+            down = tallest
+        }
+
+        return SIMD2(max(1, Int(across.rounded(.up))), max(1, Int(down.rounded(.up))))
+    }
+
+    /// Where a layer lands in the frame, in pixels, with y measured down from the top.
+    ///
+    /// For answering "why is this layer not where the author put it" without a screenshot: the
+    /// renderer's own projection, applied to the layer's own transform.
+    public static func screenRect(
+        of layer: RenderableLayer, scene: RenderableScene, width: Int, height: Int
+    ) -> CGRect {
+        let projection = aspectFilledProjection(
+            scene: scene, drawableSize: SIMD2(Float(width), Float(height))
+        )
+        let transform = projection * layer.modelMatrix
+        var lowest = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var highest = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        for corner in [
+            SIMD4<Float>(-0.5, -0.5, 0, 1), SIMD4(0.5, -0.5, 0, 1),
+            SIMD4(-0.5, 0.5, 0, 1), SIMD4(0.5, 0.5, 0, 1),
+        ] {
+            let clip = transform * corner
+            guard clip.w != 0 else { continue }
+            let ndc = SIMD2(clip.x / clip.w, clip.y / clip.w)
+            lowest = simd_min(lowest, ndc)
+            highest = simd_max(highest, ndc)
+        }
+        let scale = SIMD2(Float(width) * 0.5, Float(height) * 0.5)
+        return CGRect(
+            x: CGFloat((lowest.x + 1) * scale.x),
+            y: CGFloat((1 - highest.y) * scale.y),
+            width: CGFloat((highest.x - lowest.x) * scale.x),
+            height: CGFloat((highest.y - lowest.y) * scale.y)
+        )
+    }
+
+    /// Maps an effect box onto the whole of its render target.
+    static func projection(forBox box: EffectBox) -> simd_float4x4 {
+        let scale = SIMD2<Float>(2 / box.size.x, 2 / box.size.y)
+        return simd_float4x4(
+            SIMD4(scale.x, 0, 0, 0),
+            SIMD4(0, scale.y, 0, 0),
+            SIMD4(0, 0, 1, 0),
+            SIMD4(-box.centre.x * scale.x, -box.centre.y * scale.y, 0, 1)
+        )
+    }
+
+    /// Puts a processed effect target back over the box it was rendered from.
+    ///
+    /// The composite is an ordinary scene draw, so it goes through the scene projection like
+    /// every other layer — which is what keeps the layer where its author put it.
+    static func transform(forBox box: EffectBox) -> simd_float4x4 {
+        var transform = simd_float4x4(diagonal: SIMD4(box.size.x, box.size.y, 1, 1))
+        transform.columns.3 = SIMD4(box.centre.x, box.centre.y, 0, 1)
+        return transform
     }
 
     /// Scale the scene so it covers the drawable, cropping the longer axis rather than letting

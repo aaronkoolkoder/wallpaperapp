@@ -55,24 +55,83 @@ struct FrameCoverageTests {
         #expect(abs(pixelsPerUnitX - pixelsPerUnitY) < 1e-3, "the scene is stretched")
     }
 
-    @Test("A processed layer is composited back over exactly the frame",
+    @Test("A processed layer is composited back exactly where the layer stands",
           arguments: [SIMD2<Float>(1512, 982), SIMD2<Float>(3440, 1440), SIMD2<Float>(1920, 1080)])
-    func compositeQuadCoversTheFrame(drawable: SIMD2<Float>) {
-        // The quad a layer's effect output is drawn back with. Built from the projection's
-        // scale alone it assumed a projection centred on zero, but the scene's places its
-        // corner at the origin — and the quad landed a half-frame down and left, showing each
-        // effected layer's top-right quarter in the bottom-left quarter of the desktop.
+    func compositeQuadLandsOnTheLayer(drawable: SIMD2<Float>) {
+        // A layer's effect runs in a target of its own, and the result is drawn back over the
+        // box it was rendered from. Round-tripping a point through both matrices has to be the
+        // identity, or the effect moves the layer: Studiopolis's windmills spun off their
+        // buildings and into the sky when this was a full-frame target and a full-frame quad,
+        // because "spin" then turned the layer around the centre of the screen.
         let projection = SceneRenderer.aspectFilledProjection(
             scene: scene(ortho: SIMD2(1920, 1080)), drawableSize: drawable
         )
-        let quad = projection * SceneRenderer.fullscreenTransform(projection: projection)
+        // A small sprite well away from the centre, where the old path was most wrong.
+        var placement = simd_float4x4(diagonal: SIMD4<Float>(130, 130, 1, 1))
+        placement.columns.3 = SIMD4(1184, 455, 0, 1)
+
+        let box = try! #require(
+            SceneRenderer.effectTarget(
+                for: placement, projection: projection,
+                width: Int(drawable.x), height: Int(drawable.y)
+            )
+        )
+        let roundTrip = SceneRenderer.projection(forBox: box) * SceneRenderer.transform(forBox: box)
 
         for corner in [SIMD2<Float>(-0.5, -0.5), SIMD2(0.5, -0.5), SIMD2(-0.5, 0.5), SIMD2(0.5, 0.5)] {
-            let clip = quad * SIMD4(corner.x, corner.y, 0, 1)
+            let clip = roundTrip * SIMD4(corner.x, corner.y, 0, 1)
             let expected = corner * 2
             #expect(abs(clip.x / clip.w - expected.x) < 1e-4 && abs(clip.y / clip.w - expected.y) < 1e-4,
                     "corner \(corner) lands at (\(clip.x / clip.w), \(clip.y / clip.w)), not \(expected)")
         }
+
+        // And the box is the layer's own rectangle, not the frame: an effect writes its whole
+        // target, so anything added around the layer is drawn over the wallpaper. It is also a
+        // small fraction of the pixels a frame-sized target would have cost.
+        #expect(box.centre == SIMD2(1184, 455))
+        #expect(box.size == SIMD2(130, 130), "the target is the layer, with nothing added")
+        #expect(box.pixels.x < Int(drawable.x) / 4 && box.pixels.y < Int(drawable.y) / 4,
+                "a 130-unit sprite should not need a frame-sized target")
+    }
+
+    @Test("An effect target is never degenerate and never larger than the frame")
+    func effectTargetStaysWithinTheFrame() {
+        let projection = SceneRenderer.aspectFilledProjection(
+            scene: scene(ortho: SIMD2(1920, 1080)), drawableSize: SIMD2(3024, 1964)
+        )
+
+        // A layer scaled far past the screen: bounded, so the pool is never asked for a target
+        // that would cost hundreds of megabytes.
+        var huge = simd_float4x4(diagonal: SIMD4<Float>(19200, 10800, 1, 1))
+        huge.columns.3 = SIMD4(960, 540, 0, 1)
+        let capped = try! #require(SceneRenderer.effectTarget(
+            for: huge, projection: projection, width: 3024, height: 1964
+        ))
+        #expect(capped.pixels.x * capped.pixels.y <= 3024 * 1964 + capped.pixels.x + capped.pixels.y,
+                "a target may not cost more pixels than the frame it goes into")
+
+        // A scrolling strip, seven times wider than it is tall: bounded the same way, but it
+        // keeps its shape. Squaring it up to the frame's aspect stretches everything its effect
+        // does, since effects work in texels.
+        var strip = simd_float4x4(diagonal: SIMD4<Float>(3536, 500, 1, 1))
+        strip.columns.3 = SIMD4(960, 540, 0, 1)
+        let long = try! #require(SceneRenderer.effectTarget(
+            for: strip, projection: projection, width: 3024, height: 1964
+        ))
+        let shape = Float(long.pixels.x) / Float(long.pixels.y)
+        #expect(abs(shape - 3536 / 500) < 0.05, "the target is \(shape):1, the layer is 7.07:1")
+        #expect(long.pixels.x <= 3024 * 2 && long.pixels.y <= 1964 * 2)
+
+        // A layer a script has collapsed, or driven to NaN: no target at all, and the caller
+        // draws it unprocessed rather than asking for a zero-sized texture.
+        #expect(SceneRenderer.effectTarget(
+            for: simd_float4x4(diagonal: SIMD4<Float>(0, 0, 1, 1)),
+            projection: projection, width: 3024, height: 1964
+        ) == nil)
+        #expect(SceneRenderer.effectTarget(
+            for: simd_float4x4(diagonal: SIMD4<Float>(.nan, 130, 1, 1)),
+            projection: projection, width: 3024, height: 1964
+        ) == nil)
     }
 
     @Test("A texture slot with nothing bound still reports a usable resolution")
