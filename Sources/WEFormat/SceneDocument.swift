@@ -260,6 +260,8 @@ public struct SceneObject: Sendable, Hashable, Codable {
     public var image: String?
     /// Particle system reference, e.g. `"particles/smoke.json"`.
     public var particle: String?
+    /// This instance's own tuning of that system, when it carries one.
+    public var particleOverrides: ParticleOverrides?
     /// Literal string for a text object.
     public var text: String?
     /// Audio file references. Sound objects store an array; a bare string is accepted too.
@@ -306,6 +308,7 @@ public struct SceneObject: Sendable, Hashable, Codable {
         kind: SceneObjectKind = .unknown,
         image: String? = nil,
         particle: String? = nil,
+        particleOverrides: ParticleOverrides? = nil,
         text: String? = nil,
         sounds: [String] = [],
         material: String? = nil,
@@ -333,6 +336,7 @@ public struct SceneObject: Sendable, Hashable, Codable {
         self.kind = kind
         self.image = image
         self.particle = particle
+        self.particleOverrides = particleOverrides
         self.text = text
         self.sounds = sounds
         self.material = material
@@ -394,6 +398,8 @@ public struct SceneObject: Sendable, Hashable, Codable {
 
         image = object.string("image")
         particle = object.string("particle")
+        particleOverrides = object.value(ParticleOverrides.self, "instanceoverride")
+            .flatMap { $0.isEmpty ? nil : $0 }
         text = object.string("text")
         sounds = object.stringArray("sound") ?? []
         material = object.string("material")

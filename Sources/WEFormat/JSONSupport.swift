@@ -125,9 +125,18 @@ struct CaseInsensitiveContainer {
         self.keys = keys
     }
 
-    /// Whether the object carries this key at all — used to discriminate scene object
+    /// Whether the object carries this key with a value — used to discriminate scene object
     /// kinds, which are identified by key presence rather than by a `type` field.
-    func has(_ name: String) -> Bool { keys[name.lowercased()] != nil }
+    ///
+    /// A null counts as absent, because that is what the editor writes it to mean. Every
+    /// particle object in a real wallpaper carries `"image": null` beside its `"particle"`,
+    /// and reading the bare presence of the key called all 33 of them image objects: each one
+    /// then failed to build as an image and was dropped, so a scene of shooting stars,
+    /// fireflies and embers rendered one particle system out of thirty-three.
+    func has(_ name: String) -> Bool {
+        guard let key = keys[name.lowercased()] else { return false }
+        return !((try? container.decodeNil(forKey: key)) ?? false)
+    }
 
     // Every reader below tries the plain form first and then the object form.
     //

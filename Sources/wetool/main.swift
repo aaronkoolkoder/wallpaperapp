@@ -503,6 +503,21 @@ case "scene":
             ) else {
                 fail("offscreen render produced no image")
             }
+            // How many particles are actually alive in the frame that was just drawn. A
+            // wallpaper whose particles are invisible looks exactly like one that has none,
+            // and telling those apart from a screenshot is guesswork.
+            if !scene.particles.isEmpty {
+                let live = scene.particles.reduce(0) { $0 + $1.liveCount }
+                let total = scene.particles.reduce(0) { $0 + $1.maxCount }
+                print("particles:   \(live) live of \(total) in \(scene.particles.count) system(s)")
+                for system in scene.particles {
+                    guard let bounds = system.liveBounds else { continue }
+                    print("   \(system.materialPath ?? "?"): \(system.liveCount) across "
+                          + "x \(Int(bounds.minimum.x))…\(Int(bounds.maximum.x)) "
+                          + "y \(Int(bounds.minimum.y))…\(Int(bounds.maximum.y))")
+                }
+            }
+
             let outputURL = URL(fileURLWithPath: arguments[3])
             guard let destination = CGImageDestinationCreateWithURL(
                 outputURL as CFURL, UTType.png.identifier as CFString, 1, nil

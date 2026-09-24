@@ -58,6 +58,11 @@ public final class ParticleSystem {
     /// Turbulence: a smooth, time-varying push. Approximated, not Wallpaper Engine's noise.
     private var turbulenceScale: Float = 0
     private var turbulenceSpeed: Float = 0
+    /// A launch velocity drawn from a noise field, per `turbulentvelocityrandom`.
+    private var hasTurbulentVelocity = false
+    private var turbulentSpeedRange: (Float, Float) = (0, 0)
+    private var turbulentVelocityScale: Float = 0.005
+    private var turbulentVelocityOffset: Float = 0
     private var turbulenceTimescale: Float = 0
     private var elapsed: Float = 0
     private var lifetimeRange: ClosedRange<Float> = 1...1
@@ -83,15 +88,37 @@ public final class ParticleSystem {
     private var colorChangeFrom: SIMD3<Float> = .one
     private var colorChangeTo: SIMD3<Float> = .one
 
-    public init(document: ParticleDocument) {
+    /// The instance's own tuning of the preset: fewer, dimmer, larger, slower.
+    public let overrides: ParticleOverrides
+
+    public init(document: ParticleDocument, overrides: ParticleOverrides = .none) {
         self.document = document
-        particles = [Particle](repeating: Particle(), count: document.maxCount)
+        self.overrides = overrides
+        // `count` scales how many may be alive at once, so it has to be settled before the
+        // storage is allocated — and clamped for the same reason the document's own count is.
+        let scaled = Float(document.maxCount) * (overrides.count ?? 1)
+        particles = [Particle](
+            repeating: Particle(), count: min(max(0, Int(scaled.rounded())), 20_000)
+        )
         configure()
     }
 
-    public var maxCount: Int { document.maxCount }
+    public var maxCount: Int { particles.count }
+
+    /// Whether this system places its own particles, rather than being carried by another's.
+    ///
+    /// A child system in Wallpaper Engine can be attached to each of its parent's particles —
+    /// the trail behind a spark, the glow under a shooting star. Those either emit nothing of
+    /// their own or emit from a single point, because the parent supplies the position. One
+    /// that emits across a volume is a second layer of the same effect in the same place, and
+    /// stands on its own: the second kind of leaf in a drift, the embers over a fire.
+    public var placesItsOwnParticles: Bool {
+        emissionRate > 0 && emitterExtent.max() >= 16
+    }
     public var liveCount: Int { particles.lazy.filter(\.isAlive).count }
     public var materialPath: String? { document.material }
+    /// Systems this one carries with it, by path.
+    public var children: [String] { document.children }
 
     // MARK: - Configuration
 
@@ -126,20 +153,35 @@ public final class ParticleSystem {
             case "alpharandom":
                 alphaRange = range(initializer, default: 1...1)
             case "velocityrandom":
-                velocityMin = vector(initializer, "min")
-                velocityMax = vector(initializer, "max")
+                let (low, high) = bounds(initializer, fallback: .zero)
+                velocityMin = low
+                velocityMax = high
             case "colorrandom":
                 // Colours are authored 0-255 here, unlike everywhere else in the format.
-                colorMin = vector(initializer, "min") / 255
-                colorMax = vector(initializer, "max") / 255
+                let (low, high) = bounds(initializer, fallback: SIMD3(repeating: 255))
+                colorMin = low / 255
+                colorMax = high / 255
             case "angularvelocityrandom":
                 angularVelocityRange = range(initializer, default: 0...0)
             case "rotationrandom":
                 rotationRange = range(initializer, default: 0...0)
             case "turbulentvelocityrandom":
-                note(.degraded, "Particle motion", "turbulent velocity is approximated as linear")
-                velocityMin = vector(initializer, "min")
-                velocityMax = vector(initializer, "max")
+                // A launch velocity taken from a noise field, on top of whatever the particle
+                // was already given. It used to read `min` and `max`, which this node does not
+                // have — it carries `speedmin` and `speedmax` — so every particle came out of
+                // it with a velocity of exactly zero, and the velocity a `velocityrandom`
+                // beside it had just set was overwritten with that zero. An autumn wallpaper's
+                // leaves hung motionless above the top of the frame and never fell into it.
+                hasTurbulentVelocity = true
+                turbulentSpeedRange = (
+                    initializer.float("speedmin") ?? 0, initializer.float("speedmax") ?? 0
+                )
+                turbulentVelocityScale = initializer.float("scale") ?? 0.005
+                turbulentVelocityOffset = initializer.float("offset") ?? 0
+                note(
+                    .degraded, "Particle motion",
+                    "turbulent velocity is approximated with a noise field"
+                )
             default:
                 note(.degraded, "Particle initializer", "\(initializer.name) is not supported")
             }
@@ -180,6 +222,36 @@ public final class ParticleSystem {
                 note(.degraded, "Particle operator", "\(op.name) is not supported")
             }
         }
+
+        applyOverrides()
+    }
+
+    /// Folds the instance's own tuning into what the preset asked for.
+    ///
+    /// Applied once here rather than per particle: every one of these is a scale on a value
+    /// that is read at spawn, so scaling the ranges gives the same result as scaling each
+    /// particle and costs nothing on the frame path.
+    private func applyOverrides() {
+        if let rate = overrides.rate { emissionRate *= rate }
+        if let lifetime = overrides.lifetime, lifetime > 0 {
+            lifetimeRange = scaled(lifetimeRange, by: lifetime)
+        }
+        if let size = overrides.size { sizeRange = scaled(sizeRange, by: size) }
+        if let alpha = overrides.alpha { alphaRange = scaled(alphaRange, by: alpha) }
+        if let speed = overrides.speed {
+            velocityMin *= speed
+            velocityMax *= speed
+        }
+        // The colour is a replacement, not a scale: the instance says what colour these are.
+        if let colour = overrides.color {
+            colorMin = colour
+            colorMax = colour
+        }
+    }
+
+    private func scaled(_ range: ClosedRange<Float>, by factor: Float) -> ClosedRange<Float> {
+        let low = range.lowerBound * factor, high = range.upperBound * factor
+        return low <= high ? low...high : high...low
     }
 
     private func range(_ node: ParticleNode, default fallback: ClosedRange<Float>) -> ClosedRange<Float> {
@@ -188,6 +260,20 @@ public final class ParticleSystem {
         // Content sometimes writes min > max; swapping is friendlier than trapping on an
         // invalid ClosedRange, which would take the whole wallpaper down.
         return low <= high ? low...high : high...low
+    }
+
+    /// A node's `min` and `max` as a pair, with one standing in for a missing other.
+    ///
+    /// The format leaves out the bound that equals the other one, so `{"min": "255 255 255"}`
+    /// means exactly white rather than anything between white and black. Reading the absent
+    /// `max` as zero made every such value a random one: an autumn wallpaper's leaves, all
+    /// declared white, fell in pink, green and grey.
+    private func bounds(
+        _ node: ParticleNode, fallback: SIMD3<Float>
+    ) -> (SIMD3<Float>, SIMD3<Float>) {
+        let low = node.vector("min").map { SIMD3(Float($0.x), Float($0.y), Float($0.z)) }
+        let high = node.vector("max").map { SIMD3(Float($0.x), Float($0.y), Float($0.z)) }
+        return (low ?? high ?? fallback, high ?? low ?? fallback)
     }
 
     private func vector(_ node: ParticleNode, _ key: String, default fallback: SIMD3<Float> = .zero) -> SIMD3<Float> {
@@ -337,6 +423,22 @@ public final class ParticleSystem {
             .random(in: componentRange(velocityMin.y, velocityMax.y), using: &random),
             .random(in: componentRange(velocityMin.z, velocityMax.z), using: &random)
         )
+        if hasTurbulentVelocity {
+            // Sampled from the field rather than drawn at random, so particles spawned near
+            // each other set off together — which is what makes it read as a draught rather
+            // than as scatter.
+            let sample = SIMD3(
+                particle.position.x * turbulentVelocityScale + turbulentVelocityOffset,
+                particle.position.y * turbulentVelocityScale + turbulentVelocityOffset,
+                particle.position.z * turbulentVelocityScale
+            )
+            let direction = SIMD3(sinf(sample.y * 2.7), sinf(sample.x * 2.3 + 1.1), 0)
+            let length = simd_length(direction)
+            let speed = Float.random(
+                in: componentRange(turbulentSpeedRange.0, turbulentSpeedRange.1), using: &random
+            )
+            if length > 0.0001 { particle.velocity += direction / length * speed }
+        }
         particle.size = Float.random(in: sizeRange, using: &random)
         particle.sizeInitial = particle.size
         particle.alpha = Float.random(in: alphaRange, using: &random)
@@ -365,6 +467,23 @@ public final class ParticleSystem {
 
     /// The texture `appendInstances` draws with.
     public var instanceTexture: (any MTLTexture)? { sprite?.pages.first ?? texture }
+
+    /// The box the live particles occupy in scene space, or nil when none are alive.
+    ///
+    /// For answering where an emitter's output actually went. A system can be at its full
+    /// count and contribute nothing to the frame, because everything it made is off-screen.
+    public var liveBounds: (minimum: SIMD2<Float>, maximum: SIMD2<Float>)? {
+        var minimum = SIMD2<Float>(repeating: .greatestFiniteMagnitude)
+        var maximum = SIMD2<Float>(repeating: -.greatestFiniteMagnitude)
+        var found = false
+        for particle in particles where particle.isAlive {
+            let position = SIMD2(particle.position.x, particle.position.y)
+            minimum = simd_min(minimum, position)
+            maximum = simd_max(maximum, position)
+            found = true
+        }
+        return found ? (minimum, maximum) : nil
+    }
 
     /// Every live particle, as the GPU draws it.
     public func appendInstances(to instances: inout [ParticleInstance], cameraOffset: SIMD2<Float>) {

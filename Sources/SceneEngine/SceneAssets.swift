@@ -159,10 +159,10 @@ public final class SceneAssets {
             // stock textures, which no package carries because every install already has them.
             if let stock = StockTextures.name(for: path),
                let made = StockTextures.make(stock, device: device) {
-                if StockTextures.isApproximation(stock) {
+                if let shape = StockTextures.approximation(of: stock) {
                     report.add(
                         .degraded, feature: "Texture",
-                        detail: "\(path) ships with Wallpaper Engine; drawn with a built-in soft sprite"
+                        detail: "\(path) ships with Wallpaper Engine; drawn with a built-in \(shape) sprite"
                     )
                 }
                 textureCache[path] = made

@@ -429,11 +429,9 @@ public struct SceneBuilder {
                     }
                 }
             case .particle:
-                if let system = buildParticleSystem(
+                systems.append(contentsOf: buildParticleSystems(
                     object, assets: assets, device: device, report: &report
-                ) {
-                    systems.append(system)
-                }
+                ))
             case .text:
                 if let built = buildTextLayer(
                     object, layerIndex: layers.count, assets: assets, device: device,
@@ -492,13 +490,61 @@ public struct SceneBuilder {
         )
     }
 
-    private func buildParticleSystem(
+    /// Every system one particle object contributes: the one it names, and the children that
+    /// come with it.
+    ///
+    /// A wallpaper's effect is routinely a parent and a child together — leaves of two kinds
+    /// drifting, embers over their own glow — and building only the parent draws half of it.
+    private func buildParticleSystems(
         _ object: SceneObject,
         assets: SceneAssets,
         device: any MTLDevice,
         report: inout CompatibilityReport
+    ) -> [ParticleSystem] {
+        guard let path = object.particle else { return [] }
+        var systems: [ParticleSystem] = []
+        var seen: Set<String> = []
+        appendParticleSystem(
+            at: path, object: object, assets: assets, device: device,
+            seen: &seen, into: &systems, report: &report
+        )
+        return systems
+    }
+
+    /// Builds one system and then its children, depth first, so a parent is drawn behind them.
+    private func appendParticleSystem(
+        at path: String,
+        object: SceneObject,
+        assets: SceneAssets,
+        device: any MTLDevice,
+        seen: inout Set<String>,
+        into systems: inout [ParticleSystem],
+        report: inout CompatibilityReport
+    ) {
+        // Content is untrusted: a definition naming itself, or a pair naming each other, would
+        // otherwise be an infinite descent through the asset loader.
+        guard seen.insert(path).inserted, seen.count <= 16 else { return }
+
+        guard let system = buildParticleSystem(
+            at: path, object: object, assets: assets, device: device, report: &report
+        ) else { return }
+        systems.append(system)
+
+        for child in system.children {
+            appendParticleSystem(
+                at: child, object: object, assets: assets, device: device,
+                seen: &seen, into: &systems, report: &report
+            )
+        }
+    }
+
+    private func buildParticleSystem(
+        at path: String,
+        object: SceneObject,
+        assets: SceneAssets,
+        device: any MTLDevice,
+        report: inout CompatibilityReport
     ) -> ParticleSystem? {
-        guard let path = object.particle else { return nil }
         guard let data = assets.data(for: path) ?? assets.data(for: path + ".json") else {
             report.add(.degraded, feature: "Particle system", detail: "\(path) is missing")
             return nil
@@ -512,7 +558,9 @@ public struct SceneBuilder {
             return nil
         }
 
-        let system = ParticleSystem(document: document)
+        // The object's own tuning of a shared preset — fewer, dimmer, slower — which is how
+        // authors place one definition a dozen times and have it look different each time.
+        let system = ParticleSystem(document: document, overrides: object.particleOverrides ?? .none)
         let origin = object.origin ?? WEVector3(0, 0, 0)
         system.origin = SIMD3(Float(origin.x), Float(origin.y), Float(origin.z))
 
@@ -527,6 +575,18 @@ public struct SceneBuilder {
                 system.texture = loaded.texture
                 system.sprite = loaded.sprite
             }
+        }
+
+        // A child that emits nothing of its own, or everything from a single point, is one
+        // Wallpaper Engine carries on each of its parent's particles — a spark's trail, the
+        // glow under a shooting star. Drawn here it would sit as a speck on the emitter
+        // instead of following anything, so it is reported rather than drawn.
+        if !system.placesItsOwnParticles, object.particle != path {
+            report.add(
+                .degraded, feature: "Particle system",
+                detail: "\(path) follows its parent's particles, which is not supported"
+            )
+            return nil
         }
 
         // Surface whatever behaviours the emitter needed and we do not implement.

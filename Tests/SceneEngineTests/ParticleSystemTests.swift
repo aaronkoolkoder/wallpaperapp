@@ -316,4 +316,106 @@ struct ParticleSystemTests {
         // A tenth of a second at a few hundred units a second.
         #expect(mean > 10, "particles moved \(mean) on average")
     }
+
+    /// Four ways a real library's particles came out wrong, each of which looked from a
+    /// screenshot like "the particles are broken" and none of which was the same bug.
+    @Test("A turbulent launch velocity adds to the particle's own, and never replaces it with zero")
+    func turbulentVelocityDoesNotCancelTheRest() throws {
+        // `turbulentvelocityrandom` carries `speedmin`/`speedmax`, not `min`/`max`. Reading the
+        // ones it does not have gave every particle a velocity of zero — and, because it is
+        // written after `velocityrandom`, threw away the falling velocity beside it. An autumn
+        // wallpaper's leaves hung above the top of the frame and never fell into it.
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":20,"emitter":[{"name":"boxrandom","rate":50,"distancemax":"10 10 0"}],
+         "initializer":[
+           {"name":"lifetimerandom","min":10,"max":10},
+           {"name":"velocityrandom","min":"-100 -100 0","max":"-50 -15 0"},
+           {"name":"turbulentvelocityrandom","offset":3,"scale":0.5,"speedmin":35,"speedmax":100}
+         ],
+         "operator":[{"name":"movement"}]}
+        """))
+
+        for _ in 0 ..< 60 { system.update(deltaTime: 1.0 / 30) }
+        let bounds = try #require(system.liveBounds)
+        #expect(bounds.minimum.y < -20, "nothing fell: \(bounds.minimum.y)")
+        #expect(bounds.minimum.x < -20, "nothing drifted: \(bounds.minimum.x)")
+    }
+
+    @Test("A colour with only a minimum is that colour, not a random one between it and black")
+    func minimumOnlyColourIsConstant() throws {
+        // The format leaves out the bound that equals the other. Reading the absent one as zero
+        // made every leaf declared "255 255 255" a different colour on the way down.
+        let system = ParticleSystem(document: try document("""
+        {"maxcount":40,"emitter":[{"name":"boxrandom","rate":100,"distancemax":"10 10 0"}],
+         "initializer":[
+           {"name":"lifetimerandom","min":5,"max":5},
+           {"name":"colorrandom","min":"255 255 255"}
+         ],
+         "operator":[{"name":"movement"}]}
+        """))
+        system.update(deltaTime: 0.5)
+
+        var instances: [ParticleInstance] = []
+        system.appendInstances(to: &instances, cameraOffset: .zero)
+        #expect(!instances.isEmpty)
+        for instance in instances {
+            #expect(instance.tint.x > 0.99 && instance.tint.y > 0.99 && instance.tint.z > 0.99,
+                    "tinted \(instance.tint) rather than white")
+        }
+    }
+
+    @Test("An instance's own tuning scales the preset it uses")
+    func instanceOverridesScaleThePreset() throws {
+        // One definition, placed a dozen times and scaled differently each time, is how content
+        // is built. Ignoring the scaling ran every instance at the preset's settings: one scene
+        // came out at full brightness and full rate where its author asked for a fifth of the
+        // alpha, and buried itself in its own confetti.
+        let json = """
+        {"maxcount":100,"emitter":[{"name":"boxrandom","rate":100,"distancemax":"10 10 0"}],
+         "initializer":[
+           {"name":"lifetimerandom","min":4,"max":4},
+           {"name":"sizerandom","min":10,"max":10},
+           {"name":"alpharandom","min":1,"max":1}
+         ],
+         "operator":[{"name":"movement"}]}
+        """
+        let plain = ParticleSystem(document: try document(json))
+        let tuned = ParticleSystem(
+            document: try document(json),
+            overrides: ParticleOverrides(alpha: 0.25, rate: 0.5, count: 0.5, size: 2)
+        )
+
+        #expect(tuned.maxCount == plain.maxCount / 2, "count scales the storage, before it fills")
+        for _ in 0 ..< 30 {
+            plain.update(deltaTime: 1.0 / 30)
+            tuned.update(deltaTime: 1.0 / 30)
+        }
+        #expect(tuned.liveCount < plain.liveCount, "half the rate, half as many")
+
+        var instances: [ParticleInstance] = []
+        tuned.appendInstances(to: &instances, cameraOffset: .zero)
+        let instance = try #require(instances.first)
+        #expect(abs(instance.tint.w - 0.25) < 0.01, "alpha \(instance.tint.w), asked for 0.25")
+        #expect(abs(instance.placement.z - 20) < 0.01, "size \(instance.placement.z), asked for 20")
+    }
+
+    @Test("A child that emits across a volume stands alone; one that emits from a point does not")
+    func childrenThatFollowTheirParentAreNotDrawn() throws {
+        // A child in Wallpaper Engine can be carried on each of its parent's particles — the
+        // trail behind a spark. Those emit nothing of their own, or everything from one point,
+        // because the parent supplies the position.
+        let independent = ParticleSystem(document: try document("""
+        {"maxcount":50,"emitter":[{"name":"sphererandom","rate":5,"distancemax":750}]}
+        """))
+        let trail = ParticleSystem(document: try document("""
+        {"maxcount":10,"emitter":[{"name":"sphererandom","rate":10,"distancemax":6}]}
+        """))
+        let silent = ParticleSystem(document: try document("""
+        {"maxcount":100,"emitter":[{"name":"sphererandom","rate":0,"distancemax":32}]}
+        """))
+
+        #expect(independent.placesItsOwnParticles)
+        #expect(!trail.placesItsOwnParticles)
+        #expect(!silent.placesItsOwnParticles)
+    }
 }

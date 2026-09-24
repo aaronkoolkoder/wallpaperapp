@@ -31,14 +31,26 @@ enum StockTextures {
 
     /// Stand-ins for Wallpaper Engine's stock particle sprites.
     ///
-    /// Emitters name `particle/halo`, `particle/fog/fog1`, `particle/drop` and their numbered
-    /// variants, which ship with Wallpaper Engine rather than the wallpaper — in a real library
-    /// they were missing from 10, 10 and 5 wallpapers, and every one of those particles drew as a
-    /// hard white square. What they have in common is a soft white shape the particle's own
-    /// colour tints, so that is what is generated: a round glow by default, a wider fainter
-    /// blob for fog and smoke, a thin streak for rain and a soft vertical beam.
+    /// Emitters name `particle/halo`, `particle/fog/fog1`, `particle/nature/leaves7` and their
+    /// numbered variants, which ship with Wallpaper Engine rather than the wallpaper — in a real
+    /// library of 114 they were missing from 10, 10 and 4 wallpapers respectively, and every one
+    /// of those particles drew as a hard white square before any of this existed.
+    ///
+    /// Each family gets the silhouette its name describes rather than one soft blob for all of
+    /// them. The blob was enough while everything using it glowed, and visibly not enough
+    /// afterwards: an autumn wallpaper's falling leaves came out as pale smudges that all but
+    /// vanished against a bright sky, where the author's preview shows leaf-shaped leaves.
+    /// Shape is most of what a particle sprite contributes — emitters tint it themselves.
     static func particleSprite(for name: String) -> String? {
         guard name.hasPrefix("particle/") else { return nil }
+        if name.contains("leaf") || name.contains("leaves") {
+            // The number in `leaves1` … `leaves7` picks the colour, so a wallpaper drifting two
+            // kinds of leaf past each other gets two kinds rather than the same one twice.
+            return "particle:leaf\(variantNumber(in: name))"
+        }
+        if name.contains("petal") || name.contains("sakura") || name.contains("blossom") {
+            return "particle:petal"
+        }
         if name.contains("fog") || name.contains("smoke") || name.contains("cloud") {
             return "particle:fog"
         }
@@ -46,6 +58,12 @@ enum StockTextures {
         if name.contains("beam") || name.contains("ray") || name.contains("shaft") {
             return "particle:beam"
         }
+        if name.contains("lightning") || name.contains("bolt") { return "particle:bolt" }
+        if name.contains("debris") || name.contains("rubble") { return "particle:debris" }
+        if name.contains("wave") || name.contains("ripple") || name.contains("ring") {
+            return "particle:ring"
+        }
+        if name.contains("flare") || name.contains("star") { return "particle:flare" }
         return "particle:glow"
     }
 
@@ -53,7 +71,26 @@ enum StockTextures {
     /// compatibility report can say so.
     static func isApproximation(_ name: String) -> Bool { name.hasPrefix("particle:") }
 
+    /// What an approximation draws, for the compatibility report to name. "Drawn with a
+    /// built-in sprite" leaves the reader to guess whether their leaves are leaves.
+    static func approximation(of name: String) -> String? {
+        guard isApproximation(name) else { return nil }
+        return String(name.dropFirst("particle:".count).prefix { !$0.isNumber })
+    }
+
+    /// The trailing number in a texture's name, or 0 — `leaves7` is 7, `rosepetals` is 0.
+    static func variantNumber(in name: String) -> Int {
+        Int(String(name.reversed().prefix(while: \.isNumber).reversed())) ?? 0
+    }
+
     static func make(_ name: String, device: any MTLDevice) -> SceneTexture? {
+        if name.hasPrefix("particle:leaf") {
+            let variant = Int(name.dropFirst("particle:leaf".count)) ?? 0
+            return image(
+                sprite(side: 64, colour: leafColours[variant % leafColours.count], shape: leaf),
+                side: 64, device: device, label: name, repeats: false
+            )
+        }
         switch name {
         case "util/white": return solid(255, 255, 255, 255, device: device, label: name)
         case "util/black": return solid(0, 0, 0, 255, device: device, label: name)
@@ -65,28 +102,155 @@ enum StockTextures {
             return image(sprite(side: 64) { x, y in falloff(x * x + y * y, sharpness: 3) },
                          side: 64, device: device, label: name, repeats: false)
         case "particle:fog":
-            return image(sprite(side: 128) { x, y in 0.6 * falloff(x * x + y * y, sharpness: 1.5) },
-                         side: 128, device: device, label: name, repeats: false)
+            return image(fog(side: 128), side: 128, device: device, label: name, repeats: false)
         case "particle:drop":
             return image(sprite(side: 64) { x, y in falloff(x * x * 36 + y * y, sharpness: 3) },
                          side: 64, device: device, label: name, repeats: false)
         case "particle:beam":
             return image(sprite(side: 64) { x, y in falloff(x * x * 9, sharpness: 3) * (1 - abs(y)) },
                          side: 64, device: device, label: name, repeats: false)
+        case "particle:leaf":
+            return image(sprite(side: 64, shape: leaf), side: 64, device: device,
+                         label: name, repeats: false)
+        case "particle:petal":
+            return image(sprite(side: 64, colour: petalColour, shape: petal), side: 64,
+                         device: device, label: name, repeats: false)
+        case "particle:debris":
+            return image(sprite(side: 32, shape: debris), side: 32,
+                         device: device, label: name, repeats: false)
+        case "particle:bolt":
+            return image(sprite(side: 64, shape: bolt), side: 64, device: device,
+                         label: name, repeats: false)
+        case "particle:ring":
+            return image(sprite(side: 64, shape: ring), side: 64, device: device,
+                         label: name, repeats: false)
+        case "particle:flare":
+            return image(sprite(side: 64, shape: flare), side: 64, device: device,
+                         label: name, repeats: false)
         default: return nil
         }
     }
 
-    /// White, with alpha from `shape` over -1...1 in both axes. Straight alpha, like every other
-    /// texture here: the shaders premultiply after sampling.
-    static func sprite(side: Int, shape: (Float, Float) -> Float) -> [UInt8] {
+    // MARK: - Particle silhouettes
+    //
+    // Each takes a point over -1...1 in both axes and answers how opaque the sprite is there.
+    // Solid in the middle with a soft edge, rather than a glow that fades all the way out: a
+    // leaf is an object, and one drawn as a gradient disappears against a bright sky.
+
+    /// A leaf: widest below the middle, drawn to a point at the tip, with a stem.
+    static func leaf(_ x: Float, _ y: Float) -> Float {
+        let along = (y + 1) / 2
+        guard along > 0, along < 1 else { return 0 }
+        let halfWidth = 0.58 * sinf(.pi * powf(along, 0.78)) * (1 - 0.3 * along * along)
+        let blade = 1 - smoothstep(halfWidth - 0.05, halfWidth + 0.05, abs(x))
+        // The stem is what makes it read as a leaf at the dozen pixels across an emitter
+        // actually draws it at, rather than as a seed or a flake.
+        let stem = along < 0.2 ? 1 - smoothstep(0.015, 0.05, abs(x)) : 0
+        return max(blade, stem)
+    }
+
+    /// A petal: rounder than a leaf and widest near the tip, the way a rose or blossom petal is.
+    static func petal(_ x: Float, _ y: Float) -> Float {
+        let along = (y + 1) / 2
+        guard along > 0, along < 1 else { return 0 }
+        let halfWidth = 0.72 * sinf(.pi * powf(along, 1.4))
+        return 1 - smoothstep(halfWidth - 0.06, halfWidth + 0.06, abs(x))
+    }
+
+    /// A chip of debris: angular and off-round, so a burst of them does not read as a burst of
+    /// circles.
+    static func debris(_ x: Float, _ y: Float) -> Float {
+        let angle = atan2f(y, x)
+        let radius = 0.62 + 0.16 * cosf(3 * angle + 0.7) + 0.08 * cosf(5 * angle - 1.1)
+        return 1 - smoothstep(radius - 0.06, radius + 0.06, sqrtf(x * x + y * y))
+    }
+
+    /// A bolt: one jagged streak down the sprite, fading out at both ends.
+    static func bolt(_ x: Float, _ y: Float) -> Float {
+        // A fixed zigzag rather than a random one. An emitter has a single texture to draw
+        // every bolt from, so they are all this shape, rotated and scaled.
+        let path = 0.38 * sinf(2.9 * y + 1.1) * (1 - abs(y) * 0.35)
+        let core = 1 - smoothstep(0.03, 0.13, abs(x - path))
+        return core * (1 - smoothstep(0.72, 1, abs(y)))
+    }
+
+    /// A ring: a ripple's edge, open in the middle.
+    static func ring(_ x: Float, _ y: Float) -> Float {
+        let distance = sqrtf(x * x + y * y)
+        return (1 - smoothstep(0, 0.24, abs(distance - 0.72))) * (1 - smoothstep(0.88, 1, distance))
+    }
+
+    /// A flare: a bright core with four rays out of it.
+    static func flare(_ x: Float, _ y: Float) -> Float {
+        let core = falloff(x * x + y * y, sharpness: 4)
+        let across = falloff(min(1, x * x * 1.1 + y * y * 90), sharpness: 2)
+        let down = falloff(min(1, y * y * 1.1 + x * x * 90), sharpness: 2)
+        return min(1, core + 0.75 * max(across, down))
+    }
+
+    /// Fog: a soft blob broken up by cloud noise.
+    ///
+    /// Fog and smoke emitters stack dozens of these on top of each other. A perfectly smooth
+    /// disc of haze stacks into something that reads as bubbles; noise across it stacks into
+    /// something that reads as fog.
+    static func fog(side: Int) -> [UInt8] {
+        let field = cloudsField(side: side)
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        for row in 0 ..< side {
+            for column in 0 ..< side {
+                let x = (Float(column) + 0.5) / Float(side) * 2 - 1
+                let y = (Float(row) + 0.5) / Float(side) * 2 - 1
+                let shape = 0.8 * falloff(x * x + y * y, sharpness: 1.6)
+                let value = shape * (0.35 + 0.95 * field[row * side + column])
+                pixels[(row * side + column) * 4 + 3] = UInt8((min(max(value, 0), 1) * 255).rounded())
+            }
+        }
+        return pixels
+    }
+
+    private static func smoothstep(_ low: Float, _ high: Float, _ value: Float) -> Float {
+        guard high > low else { return value < low ? 0 : 1 }
+        let t = min(max((value - low) / (high - low), 0), 1)
+        return t * t * (3 - 2 * t)
+    }
+
+    /// Colours for the sprites that are objects rather than light.
+    ///
+    /// Wallpaper Engine's own sprite carries its colour — its leaves are brown because the
+    /// texture is brown — and an emitter that wants them unchanged asks for white. A white
+    /// stand-in therefore comes out white, which is how an autumn wallpaper's leaves ended up
+    /// invisible against its bright sky. Light does not have this problem: a glow, a beam or a
+    /// bolt is white in the texture too, and the emitter's colour is the whole point.
+    static let leafColours: [SIMD3<UInt8>] = [
+        SIMD3(150, 84, 36),     // brown
+        SIMD3(198, 124, 42),    // orange
+        SIMD3(176, 146, 62),    // gold
+        SIMD3(170, 66, 44),     // red
+    ]
+    static let petalColour = SIMD3<UInt8>(242, 158, 178)
+
+    // Debris is not on this list, though it is an object too: the emitters that use it say what
+    // colour it is — the ash over a burning city tints it to a warm grey — so a grey sprite
+    // under a grey tint came out almost black.
+
+    /// `colour`, with alpha from `shape` over -1...1 in both axes. Straight alpha, like every
+    /// other texture here: the shaders premultiply after sampling.
+    static func sprite(
+        side: Int,
+        colour: SIMD3<UInt8> = SIMD3(255, 255, 255),
+        shape: (Float, Float) -> Float
+    ) -> [UInt8] {
         var pixels = [UInt8](repeating: 255, count: side * side * 4)
         for row in 0 ..< side {
             for column in 0 ..< side {
                 let x = (Float(column) + 0.5) / Float(side) * 2 - 1
                 let y = (Float(row) + 0.5) / Float(side) * 2 - 1
                 let alpha = min(max(shape(x, y), 0), 1)
-                pixels[(row * side + column) * 4 + 3] = UInt8((alpha * 255).rounded())
+                let offset = (row * side + column) * 4
+                pixels[offset] = colour.x
+                pixels[offset + 1] = colour.y
+                pixels[offset + 2] = colour.z
+                pixels[offset + 3] = UInt8((alpha * 255).rounded())
             }
         }
         return pixels
@@ -109,10 +273,24 @@ enum StockTextures {
         return (0 ..< side * side * 4).map { _ in UInt8(truncatingIfNeeded: random.next() >> 56) }
     }
 
-    /// Soft, tileable fractal noise in the colour channels, alpha opaque. Five octaves of value
-    /// noise on lattices that divide the texture evenly, so every octave wraps at the edge and
-    /// the sum tiles with no seam.
+    /// Soft, tileable fractal noise in the colour channels, alpha opaque.
     static func clouds(side: Int) -> [UInt8] {
+        let field = cloudsField(side: side)
+        var pixels = [UInt8](repeating: 255, count: side * side * 4)
+        for index in 0 ..< side * side {
+            let value = UInt8(clamping: Int((field[index] * 255).rounded()))
+            pixels[index * 4] = value
+            pixels[index * 4 + 1] = value
+            pixels[index * 4 + 2] = value
+        }
+        return pixels
+    }
+
+    /// The same noise as a field over 0...1, which the fog sprite shapes into a wisp.
+    ///
+    /// Five octaves of value noise on lattices that divide the texture evenly, so every octave
+    /// wraps at the edge and the sum tiles with no seam.
+    static func cloudsField(side: Int) -> [Float] {
         var random = SplitMix64(seed: 0xC10_0D5)
         var field = [Float](repeating: 0, count: side * side)
         var amplitude: Float = 1
@@ -138,14 +316,9 @@ enum StockTextures {
             amplitude *= 0.5
         }
 
-        var pixels = [UInt8](repeating: 255, count: side * side * 4)
-        for index in 0 ..< side * side {
-            let value = UInt8(clamping: Int((field[index] / total * 255).rounded()))
-            pixels[index * 4] = value
-            pixels[index * 4 + 1] = value
-            pixels[index * 4 + 2] = value
-        }
-        return pixels
+        guard total > 0 else { return field }
+        for index in 0 ..< field.count { field[index] /= total }
+        return field
     }
 
     private static func smooth(_ t: Float) -> Float { t * t * (3 - 2 * t) }

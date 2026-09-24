@@ -85,11 +85,13 @@ public struct ParticleDocument: Sendable, Hashable, Codable {
     public var emitters: [ParticleNode]
     public var initializers: [ParticleNode]
     public var operators: [ParticleNode]
+    /// Particle systems carried along with this one, by path.
+    public var children: [String]
 
     public init(
         material: String? = nil, maxCount: Int = 100, startTime: Double? = nil,
         emitters: [ParticleNode] = [], initializers: [ParticleNode] = [],
-        operators: [ParticleNode] = []
+        operators: [ParticleNode] = [], children: [String] = []
     ) {
         self.material = material
         self.maxCount = maxCount
@@ -97,10 +99,16 @@ public struct ParticleDocument: Sendable, Hashable, Codable {
         self.emitters = emitters
         self.initializers = initializers
         self.operators = operators
+        self.children = children
+    }
+
+    /// A child as the format writes it: an id and the path to another definition.
+    private struct ChildReference: Codable {
+        var name: String?
     }
 
     private enum CodingKeys: String, CodingKey {
-        case material, maxcount, starttime, emitter, initializer, `operator`
+        case material, maxcount, starttime, emitter, initializer, `operator`, children
     }
 
     public init(from decoder: Decoder) throws {
@@ -117,6 +125,12 @@ public struct ParticleDocument: Sendable, Hashable, Codable {
         emitters = try container.decodeIfPresent([ParticleNode].self, forKey: .emitter) ?? []
         initializers = try container.decodeIfPresent([ParticleNode].self, forKey: .initializer) ?? []
         operators = try container.decodeIfPresent([ParticleNode].self, forKey: .operator) ?? []
+
+        // A second sheet of leaves in a drift, the glow under an ember: content builds one
+        // effect out of a parent and its children, and a library that ignores the children
+        // draws half of it. The key is null as often as it is absent.
+        children = ((try? container.decodeIfPresent([ChildReference].self, forKey: .children)) ?? [])?
+            .compactMap(\.name) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -127,5 +141,6 @@ public struct ParticleDocument: Sendable, Hashable, Codable {
         try container.encode(emitters, forKey: .emitter)
         try container.encode(initializers, forKey: .initializer)
         try container.encode(operators, forKey: .operator)
+        try container.encode(children.map { ChildReference(name: $0) }, forKey: .children)
     }
 }
