@@ -44,9 +44,14 @@ struct PreviewThumbnailTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         #expect(PreviewThumbnails.shared.cached(url) == nil)
+        let before = PreviewThumbnails.shared.decodeCount
+        _ = await PreviewThumbnails.shared.load(url, maxPixel: 120)
         _ = await PreviewThumbnails.shared.load(url, maxPixel: 120)
         // A card redraws constantly while scrolling; without this every redraw is a decode.
-        #expect(PreviewThumbnails.shared.cached(url) != nil)
+        // Counted rather than read back out of the cache: `NSCache` evicts whenever it likes,
+        // so asserting the entry is still there fails on a machine under memory pressure and
+        // says nothing about this type.
+        #expect(PreviewThumbnails.shared.decodeCount - before == 1)
     }
 
     @Test("A file that is not an image returns nothing rather than throwing")

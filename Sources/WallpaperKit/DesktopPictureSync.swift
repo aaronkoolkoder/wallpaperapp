@@ -53,29 +53,48 @@ public final class DesktopPictureSync {
     // MARK: - Applying
 
     /// Derive a still for `contentURL` and make it the system desktop picture on every screen.
+    ///
+    /// One still per shape of screen, cropped to that shape. Wallpapers are overwhelmingly
+    /// 16:9 and displays are not — a 14-inch MacBook Pro is 1.54:1 — and the system does not
+    /// reliably honour the scaling asked for below, so a 16:9 still on that display was being
+    /// pillarboxed and the bars filled with grey. Our own window covers that almost all of the
+    /// time, which is why it showed up as an occasional grey rectangle down one side rather
+    /// than as something obviously wrong: at login before the first frame, in the moment
+    /// between one wallpaper and the next, and for as long as the app is not running.
     public func sync(to contentURL: URL, wallpaperID: String) {
         rememberOriginalIfNeeded()
 
-        guard let still = makeStill(from: contentURL, wallpaperID: wallpaperID) else {
-            log.warning("could not derive a still for \(wallpaperID, privacy: .public)")
-            return
+        for screen in NSScreen.screens {
+            let shape = Self.shape(of: screen)
+            guard let still = makeStill(
+                from: contentURL, wallpaperID: wallpaperID, aspect: shape
+            ) else {
+                log.warning("could not derive a still for \(wallpaperID, privacy: .public)")
+                continue
+            }
+            apply(still, to: screen)
         }
-        apply(still)
     }
 
-    private func apply(_ url: URL) {
+    /// A screen's aspect ratio, rounded so that two displays of the same shape share a still.
+    nonisolated static func shape(of screen: NSScreen) -> CGFloat {
+        let size = screen.frame.size
+        guard size.width > 0, size.height > 0 else { return 16.0 / 9 }
+        return (size.width / size.height * 100).rounded() / 100
+    }
+
+    private func apply(_ url: URL, to screen: NSScreen) {
         // Fill rather than fit: a letterboxed desktop picture would make the menu bar tint from
-        // the black bars instead of the image.
+        // the black bars instead of the image. Asked for, but not depended on — the still is
+        // already the shape of this screen, so fitting and filling come to the same thing.
         let options: [NSWorkspace.DesktopImageOptionKey: Any] = [
             .imageScaling: NSImageScaling.scaleProportionallyUpOrDown.rawValue,
             .allowClipping: true,
         ]
-        for screen in NSScreen.screens {
-            do {
-                try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
-            } catch {
-                log.error("could not set desktop picture: \(error.localizedDescription, privacy: .public)")
-            }
+        do {
+            try NSWorkspace.shared.setDesktopImageURL(url, for: screen, options: options)
+        } catch {
+            log.error("could not set desktop picture: \(error.localizedDescription, privacy: .public)")
         }
     }
 
@@ -132,16 +151,21 @@ public final class DesktopPictureSync {
             defaults.removeObject(forKey: Self.originalKey)
             return
         }
-        apply(original)
+        // Theirs, put back exactly as it was: no crop, every screen.
+        for screen in NSScreen.screens { apply(original, to: screen) }
         defaults.removeObject(forKey: Self.originalKey)
         log.info("restored original desktop picture")
     }
 
     // MARK: - Still generation
 
-    private func makeStill(from contentURL: URL, wallpaperID: String) -> URL? {
+    private func makeStill(from contentURL: URL, wallpaperID: String, aspect: CGFloat) -> URL? {
         guard let cacheDirectory else { return nil }
-        let destination = cacheDirectory.appendingPathComponent("\(wallpaperID).heic")
+        // The shape is part of the identity: the same wallpaper on a 16:9 display and on a
+        // 1.54:1 one needs two different crops.
+        let destination = cacheDirectory.appendingPathComponent(
+            "\(wallpaperID)@\(Int((aspect * 100).rounded())).heic"
+        )
 
         // Stills are deterministic for a given wallpaper, so a cache hit skips video decoding
         // entirely on every subsequent switch.
@@ -162,7 +186,7 @@ public final class DesktopPictureSync {
                 NSImage(contentsOf: contentURL)
             }
             guard let image else { return false }
-            return write(image, to: destination)
+            return write(image, to: destination, aspect: aspect)
         }
 
         guard written else { return nil }
@@ -176,10 +200,12 @@ public final class DesktopPictureSync {
     /// stored losslessly for something the window server only ever shows as a background. HEIC
     /// at high quality is roughly an order of magnitude smaller with no visible difference at
     /// desktop-picture scale.
-    private func write(_ image: NSImage, to url: URL) -> Bool {
+    private func write(_ image: NSImage, to url: URL, aspect: CGFloat) -> Bool {
         guard var cgImage = image.cgImage(
             forProposedRect: nil, context: nil, hints: nil
         ) else { return false }
+
+        if let cropped = Self.cropped(cgImage, to: aspect) { cgImage = cropped }
 
         let longest = CGFloat(max(cgImage.width, cgImage.height))
         if longest > Self.maximumStillDimension, let scaled = downscale(
@@ -201,6 +227,28 @@ public final class DesktopPictureSync {
         }
         log.error("could not write still to \(url.lastPathComponent, privacy: .public)")
         return false
+    }
+
+    /// The middle of `image` at the given aspect ratio, or nil when it is already that shape.
+    ///
+    /// The same crop the window server would make if it filled the screen with this picture,
+    /// made here instead so that it cannot decide to letterbox it rather than fill it.
+    nonisolated static func cropped(_ image: CGImage, to aspect: CGFloat) -> CGImage? {
+        guard aspect > 0, image.width > 0, image.height > 0 else { return nil }
+        let width = CGFloat(image.width), height = CGFloat(image.height)
+        let current = width / height
+        guard abs(current - aspect) > 0.01 else { return nil }
+
+        let box = current > aspect
+            ? CGSize(width: (height * aspect).rounded(.down), height: height)
+            : CGSize(width: width, height: (width / aspect).rounded(.down))
+        guard box.width >= 1, box.height >= 1 else { return nil }
+
+        return image.cropping(to: CGRect(
+            x: ((width - box.width) / 2).rounded(.down),
+            y: ((height - box.height) / 2).rounded(.down),
+            width: box.width, height: box.height
+        ))
     }
 
     private func downscale(_ image: CGImage, factor: CGFloat) -> CGImage? {

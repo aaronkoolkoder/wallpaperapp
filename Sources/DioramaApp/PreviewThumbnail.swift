@@ -34,6 +34,14 @@ final class PreviewThumbnails {
 
     func cached(_ url: URL) -> NSImage? { cache.object(forKey: url as NSURL) }
 
+    /// How many previews have actually been decoded, as opposed to served from the cache.
+    ///
+    /// A test seam. `NSCache` gives no retention guarantee — it evicts under memory pressure,
+    /// and asserting that an entry is still there is a test that fails on a loaded machine
+    /// rather than a test of this type. What the grid depends on is that scrolling past a card
+    /// twice decodes once, and that is what this counts.
+    private(set) var decodeCount = 0
+
     /// Loads `url` downsampled to at most `maxPixel` on its long edge.
     func load(_ url: URL, maxPixel: Int) async -> NSImage? {
         if let hit = cached(url) { return hit }
@@ -45,6 +53,7 @@ final class PreviewThumbnails {
         }
 
         guard let image else { return nil }
+        decodeCount += 1
         let cost = Int(image.size.width * image.size.height) * 4
         cache.setObject(image, forKey: url as NSURL, cost: cost)
         return image
