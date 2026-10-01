@@ -61,13 +61,17 @@ public final class DesktopPictureSync {
     /// time, which is why it showed up as an occasional grey rectangle down one side rather
     /// than as something obviously wrong: at login before the first frame, in the moment
     /// between one wallpaper and the next, and for as long as the app is not running.
-    public func sync(to contentURL: URL, wallpaperID: String) {
+    /// - Parameter previewURL: the wallpaper's own preview image, used when the content itself
+    ///   is not something that can be decoded into a picture. A scene's content is `scene.pkg`,
+    ///   which is an archive: every scene wallpaper was failing to produce a still at all, so
+    ///   the menu bar and Mission Control went on tinting for whatever had been playing before.
+    public func sync(to contentURL: URL, wallpaperID: String, previewURL: URL? = nil) {
         rememberOriginalIfNeeded()
 
         for screen in NSScreen.screens {
             let shape = Self.shape(of: screen)
             guard let still = makeStill(
-                from: contentURL, wallpaperID: wallpaperID, aspect: shape
+                from: contentURL, wallpaperID: wallpaperID, aspect: shape, previewURL: previewURL
             ) else {
                 log.warning("could not derive a still for \(wallpaperID, privacy: .public)")
                 continue
@@ -159,7 +163,9 @@ public final class DesktopPictureSync {
 
     // MARK: - Still generation
 
-    private func makeStill(from contentURL: URL, wallpaperID: String, aspect: CGFloat) -> URL? {
+    private func makeStill(
+        from contentURL: URL, wallpaperID: String, aspect: CGFloat, previewURL: URL?
+    ) -> URL? {
         guard let cacheDirectory else { return nil }
         // The shape is part of the identity: the same wallpaper on a 16:9 display and on a
         // 1.54:1 one needs two different crops.
@@ -179,13 +185,12 @@ public final class DesktopPictureSync {
         // boundary to drain them — they accumulate for the life of the process. Measured at
         // +108MB resident across a handful of wallpapers before this was added.
         let written: Bool = autoreleasepool {
-            let image: NSImage? = switch contentURL.pathExtension.lowercased() {
-            case "mp4", "mov", "m4v", "webm", "mkv", "avi":
-                videoFrame(from: contentURL)
-            default:
-                NSImage(contentsOf: contentURL)
+            let fromContent: NSImage? = Self.isVideo(contentURL)
+                ? videoFrame(from: contentURL)
+                : NSImage(contentsOf: contentURL)
+            guard let image = Self.picture(fromContent: fromContent, preview: previewURL) else {
+                return false
             }
-            guard let image else { return false }
             return write(image, to: destination, aspect: aspect)
         }
 
@@ -320,6 +325,23 @@ public final class DesktopPictureSync {
     /// Uses the async generator and waits on it. The synchronous `copyCGImage` is deprecated,
     /// and this runs once per wallpaper on a cache miss rather than on any hot path, so blocking
     /// briefly here is cheaper than restructuring the caller to be async.
+    /// Whether a frame has to be decoded out of this file rather than read from it.
+    nonisolated static func isVideo(_ url: URL) -> Bool {
+        ["mp4", "mov", "m4v", "webm", "mkv", "avi"].contains(url.pathExtension.lowercased())
+    }
+
+    /// The picture to hand the window server: the content itself, or the wallpaper's preview
+    /// when the content is not a picture at all.
+    ///
+    /// A scene's content is `scene.pkg`, an archive, and a web wallpaper's is markup. Neither
+    /// decodes, so every scene and web wallpaper produced no still — and the menu bar and
+    /// Mission Control went on tinting for whatever had been playing before, which is the exact
+    /// thing this type exists to prevent.
+    nonisolated static func picture(fromContent content: NSImage?, preview: URL?) -> NSImage? {
+        if let content { return content }
+        return preview.flatMap { NSImage(contentsOf: $0) }
+    }
+
     private func videoFrame(from url: URL) -> NSImage? {
         let asset = AVURLAsset(url: url)
         let generator = AVAssetImageGenerator(asset: asset)

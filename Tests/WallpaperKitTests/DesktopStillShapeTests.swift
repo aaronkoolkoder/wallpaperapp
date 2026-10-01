@@ -1,5 +1,8 @@
+import AppKit
 import CoreGraphics
+import ImageIO
 import Testing
+import UniformTypeIdentifiers
 @testable import WallpaperKit
 
 /// The still handed to the window server has to be the shape of the screen it is set on.
@@ -53,5 +56,43 @@ struct DesktopStillShapeTests {
         // An extreme shape still leaves at least one pixel to encode.
         let sliver = DesktopPictureSync.cropped(image(1920, 1080), to: 5000)
         #expect(sliver == nil || sliver!.height >= 1)
+    }
+
+    /// A scene's content is `scene.pkg` and a web wallpaper's is `index.html`. Neither is a
+    /// picture, so neither produced a still at all, and the menu bar went on tinting for
+    /// whatever had been playing before — the one thing this type exists to prevent.
+    @Test("A wallpaper whose content is not a picture falls back to its preview")
+    func fallsBackToThePreview() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DioramaStill-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let preview = directory.appendingPathComponent("preview.png")
+        let destination = try #require(CGImageDestinationCreateWithURL(
+            preview as CFURL, UTType.png.identifier as CFString, 1, nil
+        ))
+        CGImageDestinationAddImage(destination, image(640, 360), nil)
+        #expect(CGImageDestinationFinalize(destination))
+
+        // An archive decodes to nothing, so the preview stands in for it.
+        let fallback = DesktopPictureSync.picture(fromContent: nil, preview: preview)
+        #expect(fallback != nil)
+        #expect(fallback?.size.width == 640)
+
+        // Content that does decode is still preferred over the preview.
+        let fromContent = NSImage(size: NSSize(width: 10, height: 10))
+        #expect(DesktopPictureSync.picture(fromContent: fromContent, preview: preview)?.size.width == 10)
+
+        // And nothing at all stays nothing, rather than a blank desktop picture.
+        #expect(DesktopPictureSync.picture(fromContent: nil, preview: nil) == nil)
+    }
+
+    @Test("A video's still is decoded from the video, not read as one")
+    func recognisesVideos() {
+        #expect(DesktopPictureSync.isVideo(URL(fileURLWithPath: "/w/scene.mp4")))
+        #expect(DesktopPictureSync.isVideo(URL(fileURLWithPath: "/w/Scene.MOV")))
+        #expect(!DesktopPictureSync.isVideo(URL(fileURLWithPath: "/w/scene.pkg")))
+        #expect(!DesktopPictureSync.isVideo(URL(fileURLWithPath: "/w/index.html")))
     }
 }

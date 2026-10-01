@@ -3,7 +3,7 @@ import Foundation
 import Testing
 @testable import DioramaApp
 
-@Suite("PreviewThumbnails")
+@Suite("PreviewThumbnails", .serialized)
 @MainActor
 struct PreviewThumbnailTests {
 

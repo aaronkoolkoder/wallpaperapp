@@ -176,7 +176,9 @@ public final class PlaybackController {
             for finding in backend.report.findings { report.add(finding) }
 
             if syncsDesktopPicture {
-                desktopPicture.sync(to: resolved.url, wallpaperID: item.id)
+                desktopPicture.sync(
+                    to: resolved.url, wallpaperID: item.id, previewURL: item.previewURL
+                )
             }
             log.info("display \(display): playing \(item.title, privacy: .public)")
         } catch {
