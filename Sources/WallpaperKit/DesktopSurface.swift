@@ -109,6 +109,16 @@ public final class DesktopSurface {
         self.screen = screen
         window.setFrame(screen.frame, display: true)
         view.frame = NSRect(origin: .zero, size: screen.frame.size)
+
+        // Rebuilt rather than kept: the link is bound to the display the view was on, and a
+        // display that has just been reconfigured — a lid opened, a monitor woken, a
+        // resolution changed — is not necessarily the one it was bound to. A link left over
+        // from the old configuration stops calling back, and nothing else would ever notice:
+        // the wallpaper keeps its last frame and looks like a wallpaper that does not animate.
+        if case .running(let fps) = directive, needsDisplayLink {
+            stopDisplayLink()
+            startDisplayLink(fps: fps)
+        }
     }
 
     public func setResolutionScale(_ scale: Double) {

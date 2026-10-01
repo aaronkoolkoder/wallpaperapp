@@ -3,6 +3,7 @@ import Diagnostics
 import LibraryKit
 import Metal
 import PlayerCore
+import ServiceManagement
 import SwiftUI
 import WallpaperKit
 import os
@@ -77,6 +78,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self.play(item)
         }
         playlists.start()
+
+        // A display that goes away and comes back gets a brand new surface with nothing on it.
+        // Closing a laptop lid does exactly that, and until this was wired the wallpaper simply
+        // did not come back when the lid opened: what stayed on screen was the desktop picture,
+        // which is a still of the wallpaper, so it read as the animation having stopped.
+        coordinator.onSurfaceAdded = { [weak self] surface in
+            self?.restoreWallpaper(on: surface.displayID)
+        }
+        coordinator.onSurfaceRemoved = { [weak self] displayID in
+            self?.playback?.releaseDisplay(displayID)
+        }
 
         coordinator.start()
 
@@ -167,6 +179,58 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 if !restored { self.showLibrary(nil) }
             }
         }
+    }
+
+    /// Ask to be opened at login, once, the first time a wallpaper is set.
+    ///
+    /// Diorama is an accessory app, so nothing starts it on its own. A Mac that restarts — for
+    /// an update, say — comes back with no wallpaper running and the still we left behind as
+    /// the desktop picture. That still is a *static image of the wallpaper*, which is
+    /// indistinguishable from the wallpaper having stopped animating, and is exactly how it was
+    /// reported: "whenever I close the laptop and open it again it stops animation."
+    ///
+    /// Asked for once and then never again. Somebody who turns it off in Settings has said what
+    /// they want, and an app that re-adds itself to login items every time you set a wallpaper
+    /// is one you uninstall.
+    private func keepPlayingAcrossRestarts() {
+        let key = "hasRegisteredLoginItem"
+        let asked = UserDefaults.standard.bool(forKey: key)
+        UserDefaults.standard.set(true, forKey: key)
+
+        guard Self.shouldOpenAtLogin(alreadyAsked: asked, status: SMAppService.mainApp.status)
+        else { return }
+        do {
+            try SMAppService.mainApp.register()
+            log.info("registered to open at login so the wallpaper survives a restart")
+        } catch {
+            // Not worth interrupting anybody over: the wallpaper is playing either way, and
+            // Settings has the switch.
+            log.error("could not register the login item: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// Whether to register, from what is already true.
+    ///
+    /// Only when this has never been asked before and nothing is registered: `.enabled` is
+    /// already what is wanted, and `.requiresApproval` means the user has it switched off in
+    /// System Settings, which registering again would not change and would be rude to try.
+    static func shouldOpenAtLogin(alreadyAsked: Bool, status: SMAppService.Status) -> Bool {
+        !alreadyAsked && status == .notRegistered
+    }
+
+    /// Put back whatever belongs on a display that has just appeared.
+    ///
+    /// Only an exact assignment: a display the user had deliberately left clear should come
+    /// back clear, and the "any wallpaper" fallback that `restoreSession` uses at launch is for
+    /// a different question — a Mac that has never seen this display before.
+    private func restoreWallpaper(on displayID: CGDirectDisplayID) {
+        guard let playback,
+              let wanted = playback.session.wallpaperID(for: displayID),
+              let item = library.item(withID: wanted), item.isPlayable
+        else { return }
+        _ = playback.play(item, on: displayID)
+        model?.refresh()
+        log.info("display \(displayID) came back; restored \(item.title, privacy: .public)")
     }
 
     /// Replay the wallpapers this Mac had before the app last quit.
@@ -262,6 +326,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func play(_ item: WallpaperItem) {
         defer { model?.refresh() }
         guard let playback else { return }
+        keepPlayingAcrossRestarts()
         // The default action puts the wallpaper on every display. Choosing one display is the
         // inspector's per-display buttons, through `WallpaperSystemModel.play(_:on:)`.
         for displayID in coordinator.surfaces.keys {

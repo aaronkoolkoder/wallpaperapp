@@ -210,6 +210,16 @@ public final class PlaybackController {
         coordinator.setHasContent(false, for: display)
     }
 
+    /// Let go of a display that has gone away, remembering what it was playing.
+    ///
+    /// A closed laptop lid takes the built-in display with it. The backend behind it is bound
+    /// to a surface that no longer exists, so holding on keeps a renderer, its textures and its
+    /// display link alive for a screen nobody can see — and what it was playing is kept, so
+    /// that opening the lid again can put it back.
+    public func releaseDisplay(_ display: CGDirectDisplayID) {
+        tearDown(on: display)
+    }
+
     public func stopAll() {
         for display in Array(backends.keys) { tearDown(on: display) }
         // Give the user their own wallpaper back rather than leaving ours behind after quit.

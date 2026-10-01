@@ -23,6 +23,11 @@ struct GeneralSettings: View {
                         .font(.caption)
                         .foregroundStyle(.orange)
                 }
+            } footer: {
+                Text("Nothing starts Diorama on its own. With this off, restarting leaves your "
+                     + "desktop showing a still of the wallpaper instead of the wallpaper.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section {

@@ -1,3 +1,4 @@
+import ServiceManagement
 import Testing
 @testable import DioramaApp
 
@@ -81,5 +82,34 @@ struct ReopeningTests {
         #expect(AppDelegate.reopenAction(
             libraryIsVisible: true, libraryIsMiniaturised: true
         ) == .present)
+    }
+}
+
+/// Surviving a restart.
+@Suite("Opening at login")
+@MainActor
+struct LoginItemTests {
+
+    /// Diorama is an accessory app, so nothing starts it on its own. A Mac that restarts comes
+    /// back with no wallpaper running and the still we left as the desktop picture — a static
+    /// image of the wallpaper, which is indistinguishable from the wallpaper having stopped.
+    @Test("Setting a wallpaper for the first time asks to be opened at login")
+    func registersOnce() {
+        #expect(AppDelegate.shouldOpenAtLogin(alreadyAsked: false, status: .notRegistered))
+    }
+
+    @Test("Having asked once, it never asks again")
+    func neverAsksTwice() {
+        // Somebody who turned it off in Settings has said what they want, and an app that
+        // re-adds itself to login items every time you set a wallpaper is one you uninstall.
+        #expect(!AppDelegate.shouldOpenAtLogin(alreadyAsked: true, status: .notRegistered))
+        #expect(!AppDelegate.shouldOpenAtLogin(alreadyAsked: true, status: .enabled))
+    }
+
+    @Test("Nothing to do when it is already on, or switched off in System Settings")
+    func leavesSettledStatesAlone() {
+        #expect(!AppDelegate.shouldOpenAtLogin(alreadyAsked: false, status: .enabled))
+        #expect(!AppDelegate.shouldOpenAtLogin(alreadyAsked: false, status: .requiresApproval))
+        #expect(!AppDelegate.shouldOpenAtLogin(alreadyAsked: false, status: .notFound))
     }
 }
