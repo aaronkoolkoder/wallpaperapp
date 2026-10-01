@@ -120,6 +120,10 @@ struct LibraryView: View {
                     if let item = selectedItem { onPlayOnDisplay?(item, displayID) }
                 },
                 onAddToPlaylist: playlists == nil ? nil : { showingPlaylists = true },
+                onRemove: {
+                    guard let selected = selectedItem else { return }
+                    systemModel?.clear(selected.id)
+                },
                 propertyOverrides: selectedItem.map {
                     systemModel?.propertyOverrides(for: $0.id) ?? [:]
                 } ?? [:],
@@ -376,6 +380,18 @@ struct LibraryView: View {
                 }
                 .disabled(selectedItem?.isPlayable != true)
                 .help("Set the selected wallpaper")
+            }
+            // Taking a wallpaper off was only ever a hover-revealed ✕ in the menu bar popover,
+            // which is unreachable on a crowded notched menu bar — somebody who wanted their
+            // desktop back had nowhere to click.
+            ToolbarItem(placement: .primaryAction) {
+                Button(role: .destructive) {
+                    systemModel?.clearAll()
+                } label: {
+                    Label("Remove Wallpaper", systemImage: "xmark.circle")
+                }
+                .disabled(systemModel?.hasAnyWallpaper != true)
+                .help("Stop playing and put the desktop back")
             }
             ToolbarItem(placement: .primaryAction) {
                 Button {

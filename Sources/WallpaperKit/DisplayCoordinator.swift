@@ -149,10 +149,14 @@ public final class DisplayCoordinator {
 
     // MARK: - Fullscreen
 
-    /// There is no notification for "a fullscreen app now covers this display", so this is the
-    /// one thing we poll. It is deliberately slow (2s) and only runs while at least one surface
-    /// is actually rendering — polling while everything is suspended would burn power to decide
-    /// whether to save power.
+    /// There is no notification for "a fullscreen app now covers this display", so this is
+    /// polled. It is deliberately slow (2s).
+    ///
+    /// It re-reads occlusion as well, which has a notification but is the one condition where
+    /// missing a change is unrecoverable: a wallpaper suspended because the desktop was covered
+    /// stays suspended, showing its last frame, and from the outside looks exactly like a
+    /// wallpaper that does not animate. Everything else resumes on some other event eventually.
+    /// Two seconds of latency uncovering the desktop is not noticeable; never resuming is.
     private func startFullscreenPolling() {
         fullscreenPollTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.pollFullscreen() }
@@ -161,18 +165,23 @@ public final class DisplayCoordinator {
     }
 
     private func pollFullscreen() {
-        let anyRunning = surfaces.values.contains { !$0.directive.isSuspended }
-        let anyBlockedByFullscreen = policy.allDisplays.contains {
-            policy.existingConditions(for: $0)?.isCoveredByFullscreenApp == true
+        // Keep polling while anything is suspended, not only while something is running:
+        // otherwise nothing would ever notice the fullscreen app being dismissed or the
+        // desktop being uncovered, which are the two things this exists to catch.
+        let anyPlaying = policy.allDisplays.contains {
+            policy.existingConditions(for: $0)?.hasContent == true
         }
-        // Keep polling while something is suspended *because of* fullscreen, otherwise we would
-        // never notice the app being dismissed.
-        guard anyRunning || anyBlockedByFullscreen else { return }
+        guard anyPlaying else { return }
 
         for (displayID, surface) in surfaces {
             let covered = FullscreenDetector.isDisplayCovered(surface.screen)
+            // `currentConditions` re-reads the surface's occlusion, so this picks up a missed
+            // `didChangeOcclusionState` as well as a dismissed fullscreen app.
             var conditions = currentConditions(for: displayID)
-            guard conditions.isCoveredByFullscreenApp != covered else { continue }
+            let known = policy.existingConditions(for: displayID)
+            guard conditions.isCoveredByFullscreenApp != covered
+                || known?.isOccluded != conditions.isOccluded
+            else { continue }
             conditions.isCoveredByFullscreenApp = covered
             policy.updateConditions(conditions, for: displayID)
         }

@@ -196,13 +196,17 @@ private struct DisplayCard: View {
 
             Spacer(minLength: 0)
 
-            if display.wallpaperTitle != nil, isHovering {
+            // Shown whenever something is playing rather than on hover: a control that only
+            // exists once the pointer is already on it is one nobody finds when they are
+            // looking for how to take a wallpaper off.
+            if display.wallpaperTitle != nil {
                 Button(action: onClear) {
                     Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isHovering ? .primary : .secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Remove this wallpaper")
+                .accessibilityLabel("Remove the wallpaper on \(display.name)")
             }
         }
         .padding(10)

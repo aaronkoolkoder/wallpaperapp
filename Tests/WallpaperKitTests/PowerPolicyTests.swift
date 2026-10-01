@@ -305,4 +305,24 @@ struct PowerPolicyTests {
         #expect(decoded.suspendWhenAnotherAppIsActive == PowerPreferences.default.suspendWhenAnotherAppIsActive)
         #expect(decoded.frameRateOnBattery == PowerPreferences.default.frameRateOnBattery)
     }
+
+    /// Uncovering the desktop has to start it again, and the coordinator has to notice.
+    ///
+    /// The policy half is this. The other half is that something feeds it a fresh reading:
+    /// occlusion arrives as a notification, and a missed one is the only condition whose
+    /// failure is unrecoverable — the wallpaper sits on its last frame for as long as the
+    /// wallpaper is set, which is indistinguishable from a wallpaper that does not animate.
+    /// The coordinator therefore re-reads occlusion on its slow poll as well.
+    @Test("A wallpaper suspended for being covered runs again when it is uncovered")
+    func uncoveringResumes() {
+        var display = DisplayConditions()
+        display.hasContent = true
+        display.isOccluded = true
+        let system = SystemState()
+
+        #expect(evaluate(system, display) == .suspended(reason: .occluded))
+
+        display.isOccluded = false
+        #expect(evaluate(system, display) == .running(fps: 30))
+    }
 }

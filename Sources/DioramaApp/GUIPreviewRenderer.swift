@@ -277,7 +277,10 @@ private struct LibraryChromePreview: View {
                 item: items.first, isPlaying: true,
                 displays: [(id: 1, name: "Built-in Retina Display"), (id: 2, name: "Studio Display")],
                 displaysShowingItem: [1],
-                onPlay: {}, onPlayOnDisplay: { _ in }, onAddToPlaylist: {}
+                onPlay: {}, onPlayOnDisplay: { _ in }, onAddToPlaylist: {},
+                // Passed so the harness draws the playing state as the window does, with the
+                // way out of it included.
+                onRemove: {}
             )
             .frame(width: 300)
                 .background(Design.Surface.recessed)

@@ -18,6 +18,8 @@ struct InspectorPanel: View {
     let onPlay: () -> Void
     var onPlayOnDisplay: ((CGDirectDisplayID) -> Void)?
     var onAddToPlaylist: (() -> Void)?
+    /// Takes this wallpaper off every display it is on. Absent when nothing is playing.
+    var onRemove: (() -> Void)?
 
     /// The user's changed settings for this wallpaper, keyed as `project.json` keys them.
     /// Passed in as a value rather than read from the model so the panel stays a pure view.
@@ -151,6 +153,18 @@ struct InspectorPanel: View {
                         .frame(maxWidth: .infinity)
                 }
                 .controlSize(.regular)
+            }
+
+            // Directly under "Playing on all displays", which is where somebody looking for
+            // how to stop it looks first. Taking a wallpaper off used to be possible only
+            // through a ✕ that appeared on hover in the menu bar popover.
+            if let onRemove, isPlaying {
+                Button(role: .destructive, action: onRemove) {
+                    Label("Remove Wallpaper", systemImage: "xmark.circle")
+                        .frame(maxWidth: .infinity)
+                }
+                .controlSize(.regular)
+                .help("Stop playing it and put the desktop back")
             }
         }
     }

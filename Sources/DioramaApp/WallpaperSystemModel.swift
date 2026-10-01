@@ -187,6 +187,25 @@ final class WallpaperSystemModel {
         refresh()
     }
 
+    /// Takes one wallpaper off wherever it is playing.
+    func clear(_ wallpaperID: String) {
+        for display in displays where display.wallpaperID == wallpaperID {
+            playback.stop(on: display.id)
+        }
+        refresh()
+    }
+
+    /// Whether anything is playing anywhere, which is what makes "remove" worth offering.
+    var hasAnyWallpaper: Bool { displays.contains { $0.wallpaperID != nil } }
+
+    /// Take the wallpaper off every display and give the desktop back.
+    func clearAll() {
+        for display in displays where display.wallpaperID != nil {
+            playback.stop(on: display.id)
+        }
+        refresh()
+    }
+
     func item(withID id: String) -> WallpaperItem? { library.item(withID: id) }
 
 
