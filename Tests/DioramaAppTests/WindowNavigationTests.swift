@@ -48,3 +48,38 @@ struct WindowNavigationTests {
         #expect(!navigation.destination.isLibrary)
     }
 }
+
+/// Getting back into an app that has no Dock icon.
+@Suite("Reopening")
+@MainActor
+struct ReopeningTests {
+
+    /// The bug this exists for. `applicationShouldHandleReopen` was deciding from
+    /// `hasVisibleWindows`, and this app's windows are mostly the wallpaper surfaces — one per
+    /// display, ordered front, visible by every measure AppKit has. With a wallpaper playing
+    /// the answer was always yes, so clicking the app did nothing, and with the menu bar item
+    /// hidden behind a notched display's camera housing there was no way back to the library
+    /// at all. Asked about the library window instead, the answer is the one the user means.
+    @Test("A playing wallpaper is not a reason to withhold the library window")
+    func wallpaperSurfacesAreNotTheLibrary() {
+        #expect(AppDelegate.reopenAction(
+            libraryIsVisible: false, libraryIsMiniaturised: false
+        ) == .present)
+    }
+
+    @Test("A library window already open is raised rather than remade")
+    func raisesAnOpenWindow() {
+        #expect(AppDelegate.reopenAction(
+            libraryIsVisible: true, libraryIsMiniaturised: false
+        ) == .bringToFront)
+    }
+
+    @Test("A window in the Dock is brought back out of it")
+    func deminiaturises() {
+        // Ordering a miniaturised window to the front leaves it in the Dock, which from the
+        // outside is indistinguishable from the app ignoring the click.
+        #expect(AppDelegate.reopenAction(
+            libraryIsVisible: true, libraryIsMiniaturised: true
+        ) == .present)
+    }
+}

@@ -210,11 +210,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// This is the way back in when the menu bar item cannot be reached. On a notched display a
     /// crowded menu bar hides items behind the camera housing, and a background app whose only
     /// door is a hidden icon would otherwise be impossible to open short of killing it.
+    ///
+    /// `hasVisibleWindows` is not the question to ask here, which is what made this door stop
+    /// working: this app's windows are mostly the wallpaper surfaces themselves, one per
+    /// display, ordered front and visible by every measure AppKit has. With a wallpaper
+    /// playing the answer was always yes, so re-opening the app did nothing at all and there
+    /// was no way back to the library — the exact situation the parameter was being consulted
+    /// to avoid. What matters is whether the *library* window is showing.
     func applicationShouldHandleReopen(
         _ sender: NSApplication, hasVisibleWindows: Bool
     ) -> Bool {
-        if !hasVisibleWindows { showLibrary(nil) }
+        switch Self.reopenAction(
+            libraryIsVisible: window?.isVisible ?? false,
+            libraryIsMiniaturised: window?.isMiniaturized ?? false
+        ) {
+        case .present:
+            showLibrary(nil)
+        case .bringToFront:
+            window?.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        }
         return true
+    }
+
+    enum ReopenAction: Equatable {
+        /// Open the library window, making one if there is none.
+        case present
+        /// It is already open somewhere behind; raise it.
+        case bringToFront
+    }
+
+    /// What re-opening the app should do, from the state of the library window alone.
+    static func reopenAction(libraryIsVisible: Bool, libraryIsMiniaturised: Bool) -> ReopenAction {
+        libraryIsVisible && !libraryIsMiniaturised ? .bringToFront : .present
     }
 
     /// Closing the last window must not quit: the wallpaper keeps running.
@@ -394,6 +422,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func presentWindow() {
         if let window {
+            // Deminiaturised explicitly: ordering a window in the Dock to the front leaves it
+            // in the Dock, and from the outside that is indistinguishable from the app
+            // ignoring the click.
+            if window.isMiniaturized { window.deminiaturize(nil) }
             window.makeKeyAndOrderFront(nil)
             NSApp.activate(ignoringOtherApps: true)
             return
