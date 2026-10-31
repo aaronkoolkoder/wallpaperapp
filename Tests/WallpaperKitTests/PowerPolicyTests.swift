@@ -146,8 +146,48 @@ struct PowerPolicyTests {
     func batteryFloorSuspends() {
         var (system, display) = healthy()
         system.isOnACPower = false
-        system.batteryPercent = 15
+        system.batteryPercent = 5
         #expect(evaluate(system, display) == .suspended(reason: .batteryLow))
+        _ = display
+    }
+
+    @Test("A battery the user has not flagged as low keeps the wallpaper running")
+    func modestBatteryKeepsRunning() {
+        // This used to stop at 20%, invisibly and with no setting to change it, and the
+        // symptom was "the animations don't work". Low Power Mode is how someone says they
+        // want battery preserved, and `suspendInLowPowerMode` already follows it; stopping
+        // above that second-guesses a user who declined it. The floor is now a genuine
+        // last resort.
+        var (system, display) = healthy()
+        system.isOnACPower = false
+        system.batteryPercent = 15
+        system.isLowPowerMode = false
+        #expect(evaluate(system, display) == .running(fps: PowerPreferences.default.frameRateOnBattery))
+        _ = display
+    }
+
+    @Test("The floor is inclusive, and one point above it still runs")
+    func batteryFloorBoundary() {
+        var (system, display) = healthy()
+        system.isOnACPower = false
+        var preferences = PowerPreferences.default
+        preferences.batteryFloorPercent = 10
+
+        system.batteryPercent = 10
+        #expect(evaluate(system, display, preferences) == .suspended(reason: .batteryLow))
+        system.batteryPercent = 11
+        #expect(evaluate(system, display, preferences) != .suspended(reason: .batteryLow))
+        _ = display
+    }
+
+    @Test("Turning the floor off keeps the wallpaper running on a nearly flat battery")
+    func batteryFloorCanBeDisabled() {
+        var (system, display) = healthy()
+        system.isOnACPower = false
+        system.batteryPercent = 2
+        var preferences = PowerPreferences.default
+        preferences.batteryFloorPercent = 0
+        #expect(evaluate(system, display, preferences) != .suspended(reason: .batteryLow))
         _ = display
     }
 

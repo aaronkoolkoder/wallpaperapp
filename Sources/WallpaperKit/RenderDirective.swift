@@ -31,7 +31,7 @@ public enum RenderDirective: Equatable, Sendable {
 
 /// Why rendering stopped. Surfaced in the diagnostics HUD so the behaviour is legible rather
 /// than looking like a bug — "my wallpaper froze" is otherwise a support burden.
-public enum SuspensionReason: String, Equatable, Sendable, CustomStringConvertible {
+public enum SuspensionReason: String, Equatable, Sendable, CaseIterable, CustomStringConvertible {
     /// Every pixel of the surface is behind another window. The common case by far.
     case occluded
     /// A fullscreen application owns this display.
@@ -69,7 +69,7 @@ public enum SuspensionReason: String, Equatable, Sendable, CustomStringConvertib
         case .sessionInactive: "Another user is active"
         case .lowPowerMode: "Low Power Mode"
         case .thermalCritical: "Mac is too warm"
-        case .batteryLow: "Battery low"
+        case .batteryLow: "Paused to save battery"
         case .userPaused: "Paused"
         case .anotherAppActive: "Another app is in use"
         case .onBattery: "On battery"

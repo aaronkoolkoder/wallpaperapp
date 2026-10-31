@@ -17,6 +17,11 @@ public struct PowerPreferences: Equatable, Sendable, Codable {
     /// they want battery preserved, and a decorative background is the easiest thing to give up.
     public var suspendInLowPowerMode: Bool
     /// Suspend when battery drops below this percentage. 0 disables.
+    ///
+    /// A genuine last-resort threshold, not a general battery-saving measure: Low Power Mode
+    /// already covers the case where someone has told the OS to preserve battery, and
+    /// `suspendInLowPowerMode` follows it. A floor above that second-guesses a user who
+    /// declined Low Power Mode, and it does so invisibly — the wallpaper simply stops moving.
     public var batteryFloorPercent: Int
     /// Stop when the surface is fully covered. Effectively never turn this off; it is exposed
     /// only for diagnostics.
@@ -40,7 +45,7 @@ public struct PowerPreferences: Equatable, Sendable, Codable {
         frameRateOnBattery: 24,
         frameRateLowPower: 15,
         suspendInLowPowerMode: true,
-        batteryFloorPercent: 20,
+        batteryFloorPercent: 10,
         suspendWhenOccluded: true,
         suspendUnderFullscreenApps: true,
         respectThermalPressure: true,

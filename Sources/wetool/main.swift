@@ -39,6 +39,7 @@ func usage() -> Never {
       wetool pkg list <scene.pkg>        List the entries in a package
       wetool pkg cat <scene.pkg> <path>  Print one entry to stdout
       wetool pkg extract <scene.pkg> <out-dir>
+      wetool scene animate <dir> [n]     Render n frames over time and report the motion
       wetool tex info <file.tex>         Describe a texture
       wetool manifest <project.json>     Parse and dump a manifest
       wetool shader <file.frag|.vert>    Translate a shader to Metal and print it
@@ -471,6 +472,56 @@ case "scene":
             print("targets:     \(targets.allocations) allocated, \(targets.reuses) reused, "
                   + "\(byteCount(targets.peakBytes)) at peak")
             exit(0)
+        }
+
+        if subcommand == "animate" {
+            // Renders a run of frames with time advancing between them and reports how much
+            // each one differs from the last. A wallpaper that renders beautifully and never
+            // moves looks identical to a working one in any single-frame check.
+            let frames = arguments.count >= 4 ? (Int(arguments[3]) ?? 8) : 8
+            var width = 320, height = 200
+            if let sizeIndex = arguments.firstIndex(of: "--size"), sizeIndex + 1 < arguments.count {
+                let parts = arguments[sizeIndex + 1].lowercased().split(separator: "x")
+                if parts.count == 2, let w = Int(parts[0]), let h = Int(parts[1]) {
+                    width = w; height = h
+                }
+            }
+            let step: Float = 0.25
+
+            let renderer = try SceneRenderer(renderDevice: renderDevice)
+            renderer.setScene(scene)
+
+            func pixels(_ image: CGImage) -> [UInt8] {
+                guard let data = image.dataProvider?.data as Data? else { return [] }
+                return [UInt8](data)
+            }
+            var previous: [UInt8] = []
+            var deltas: [Double] = []
+            for index in 0 ..< frames {
+                // The first call seeds the clock; every later one advances it by `step`.
+                guard let image = renderer.renderOffscreen(
+                    width: width, height: height, warmUpSeconds: index == 0 ? 0 : step
+                ) else { fail("offscreen render produced no image") }
+                let current = pixels(image)
+                if !previous.isEmpty, previous.count == current.count {
+                    var total = 0
+                    for offset in stride(from: 0, to: current.count, by: 4) {
+                        total += abs(Int(current[offset]) - Int(previous[offset]))
+                            + abs(Int(current[offset + 1]) - Int(previous[offset + 1]))
+                            + abs(Int(current[offset + 2]) - Int(previous[offset + 2]))
+                    }
+                    deltas.append(Double(total) / Double(current.count / 4 * 3))
+                }
+                previous = current
+            }
+
+            print()
+            let moved = deltas.filter { $0 > 0.05 }.count
+            print(String(format: "frames:     %d at %dx%d, %.2fs apart", frames, width, height, step))
+            print(String(format: "motion:     %.3f mean, %.3f peak (0-255 per channel)",
+                         deltas.reduce(0, +) / Double(max(deltas.count, 1)), deltas.max() ?? 0))
+            print("moving:     \(moved)/\(deltas.count) frame pairs differ")
+            exit(moved == 0 ? 1 : 0)
         }
 
         if subcommand == "render" {

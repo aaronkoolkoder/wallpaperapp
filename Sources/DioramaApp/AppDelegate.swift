@@ -65,6 +65,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             preferences.suspendUnderFullscreenApps = false
             preferences.suspendInLowPowerMode = false
             model.persistsPreferences = false
+            // Battery too, or a diagnostic run on a low battery reports a frozen wallpaper
+            // and tells you nothing about the renderer.
+            preferences.batteryFloorPercent = 0
+            preferences.suspendOnBattery = false
             coordinator.setPreferences(preferences)
             log.warning("DIORAMA_FORCE_RENDER is set; occlusion suspension disabled")
         }

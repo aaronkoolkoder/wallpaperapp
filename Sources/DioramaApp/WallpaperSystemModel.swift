@@ -100,6 +100,11 @@ final class WallpaperSystemModel {
         coordinator.setPreferences(saved)
         self.audioReactivityEnabled = UserDefaults.standard.bool(forKey: "audioReactivity")
 
+        // Explicitly, because assigning a property in `init` does not run its `didSet`: the
+        // coordinator was built with the defaults and would otherwise keep them, so a user's
+        // saved settings would show in the UI while having no effect on anything.
+        coordinator.setPreferences(preferences)
+
         audioCapture.onStatusChange = { [weak self] status in
             self?.audioStatus = status
         }
@@ -269,7 +274,13 @@ final class WallpaperSystemModel {
     /// context invites comparison against whatever Activity Monitor happens to show, and the
     /// honest story here is about *when* we render, not how fast.
     var energySummary: String {
-        if activeCount == 0 { return "Idle — using no energy" }
+        // Why, not just that. "Idle" on its own reads as a fault when a wallpaper has stopped
+        // moving and the user cannot see what stopped it — which is exactly how a paused
+        // wallpaper was reported as broken animation.
+        if activeCount == 0 {
+            if let idleReason { return "Paused — \(idleReason.lowercased())" }
+            return "Idle — using no energy"
+        }
         if systemState.isLowPowerMode { return "Low Power Mode — reduced frame rate" }
         if !systemState.isOnACPower {
             return "On battery — \(preferences.frameRateOnBattery) fps"
